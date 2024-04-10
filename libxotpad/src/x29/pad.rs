@@ -5,7 +5,7 @@ use std::io;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 use std::thread;
-use tracing_mutex::stdsync::{TracingCondvar, TracingMutex, TracingRwLock};
+use tracing_mutex::stdsync::{Condvar, Mutex, RwLock};
 
 use crate::x25::{Svc, Vc};
 use crate::x29::message::X29PadMessage;
@@ -17,8 +17,8 @@ type IndicateChannelMessage = Vec<(u8, u8)>;
 pub struct X29Pad {
     svc: Svc,
 
-    recv_queue: Arc<(TracingMutex<VecDeque<RecvQueueMessage>>, TracingCondvar)>,
-    indicate_channel: Arc<TracingMutex<Option<Sender<IndicateChannelMessage>>>>,
+    recv_queue: Arc<(Mutex<VecDeque<RecvQueueMessage>>, Condvar)>,
+    indicate_channel: Arc<Mutex<Option<Sender<IndicateChannelMessage>>>>,
 }
 
 pub enum X29PadSignal {
@@ -40,7 +40,7 @@ impl Clone for X29Pad {
 
 // TODO: this is why we INNER...
 fn queue_recv(
-    recv_queue: &(TracingMutex<VecDeque<RecvQueueMessage>>, TracingCondvar),
+    recv_queue: &(Mutex<VecDeque<RecvQueueMessage>>, Condvar),
     message: RecvQueueMessage,
 ) {
     recv_queue.0.lock().unwrap().push_back(message);
@@ -48,12 +48,9 @@ fn queue_recv(
 }
 
 impl X29Pad {
-    pub fn new<Q: X3Params + Send + Sync + 'static>(
-        svc: Svc,
-        params: Arc<TracingRwLock<Q>>,
-    ) -> Self {
-        let recv_queue = Arc::new((TracingMutex::new(VecDeque::new()), TracingCondvar::new()));
-        let indicate_channel = Arc::new(TracingMutex::new(None));
+    pub fn new<Q: X3Params + Send + Sync + 'static>(svc: Svc, params: Arc<RwLock<Q>>) -> Self {
+        let recv_queue = Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
+        let indicate_channel = Arc::new(Mutex::new(None));
 
         thread::Builder::new().name("x29_pad".to_string()).spawn({
             let svc = svc.clone();

@@ -15,7 +15,7 @@ use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use tracing_mutex::stdsync::{TracingMutex, TracingRwLock};
+use tracing_mutex::stdsync::{Mutex, RwLock};
 
 use crate::x28::{format_params, X28Command};
 use crate::x3::X3Params;
@@ -83,14 +83,14 @@ pub fn run(
     let mut local_state = PadLocalState::Command;
     let mut is_one_shot = false;
 
-    let x3_params = Arc::new(TracingRwLock::new(
+    let x3_params = Arc::new(RwLock::new(
         x3_profiles
             .get(x3_profile)
             .expect("unknown X.3 profile")
             .clone(),
     ));
 
-    let current_call = Arc::new(TracingMutex::new(Option::<(X29Pad, X25Params)>::None));
+    let current_call = Arc::new(Mutex::new(Option::<(X29Pad, X25Params)>::None));
 
     if let Some(svc) = svc {
         let x25_params = svc.params();

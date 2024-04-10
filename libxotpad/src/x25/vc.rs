@@ -9,7 +9,7 @@ use std::io;
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
-use tracing_mutex::stdsync::{TracingCondvar, TracingMutex, TracingRwLock};
+use tracing_mutex::stdsync::{Condvar, Mutex, RwLock};
 
 use crate::x121::X121Addr;
 use crate::x25::facility::X25Facility;
@@ -426,8 +426,9 @@ impl Vc for Svc {
 
             drop(state);
 
-            // this will drop the lock on the queue, we'll reaquire above
-            let _ = inner.recv_data_queue.1.wait(queue).unwrap();
+            // drop the lock on the queue, we'll reaquire above to maintain
+            // acquisition order
+            drop(inner.recv_data_queue.1.wait(queue).unwrap());
         }
     }
 
@@ -496,8 +497,9 @@ impl Vc for Svc {
 
             drop(state);
 
-            // this will drop the lock on the queue, we'll reaquire above
-            let _ = inner.send_data_queue.1.wait(queue).unwrap();
+            // drop the lock on the queue, we'll reaquire above to maintain
+            // acquisition order
+            drop(inner.send_data_queue.1.wait(queue).unwrap());
         }
     }
 
@@ -521,13 +523,13 @@ impl Clone for Svc {
 }
 
 struct VcInner {
-    send_link: Arc<TracingMutex<XotLink>>,
-    engine_wait: Arc<TracingCondvar>,
+    send_link: Arc<Mutex<XotLink>>,
+    engine_wait: Arc<Condvar>,
     channel: u16,
-    state: Arc<(TracingMutex<VcState>, TracingCondvar)>,
-    params: Arc<TracingRwLock<X25Params>>,
-    send_data_queue: Arc<(TracingMutex<VecDeque<SendData>>, TracingCondvar)>,
-    recv_data_queue: Arc<(TracingMutex<VecDeque<X25Data>>, TracingCondvar)>,
+    state: Arc<(Mutex<VcState>, Condvar)>,
+    params: Arc<RwLock<X25Params>>,
+    send_data_queue: Arc<(Mutex<VecDeque<SendData>>, Condvar)>,
+    recv_data_queue: Arc<(Mutex<VecDeque<X25Data>>, Condvar)>,
 }
 
 struct SendData {
@@ -541,20 +543,20 @@ impl VcInner {
         let state = VcState::Ready;
 
         VcInner {
-            send_link: Arc::new(TracingMutex::new(send_link)),
-            engine_wait: Arc::new(TracingCondvar::new()),
+            send_link: Arc::new(Mutex::new(send_link)),
+            engine_wait: Arc::new(Condvar::new()),
             channel,
-            state: Arc::new((TracingMutex::new(state), TracingCondvar::new())),
-            params: Arc::new(TracingRwLock::new(params.clone())),
-            send_data_queue: Arc::new((TracingMutex::new(VecDeque::new()), TracingCondvar::new())),
-            recv_data_queue: Arc::new((TracingMutex::new(VecDeque::new()), TracingCondvar::new())),
+            state: Arc::new((Mutex::new(state), Condvar::new())),
+            params: Arc::new(RwLock::new(params.clone())),
+            send_data_queue: Arc::new((Mutex::new(VecDeque::new()), Condvar::new())),
+            recv_data_queue: Arc::new((Mutex::new(VecDeque::new()), Condvar::new())),
         }
     }
 
     fn run(&self, mut recv_link: XotLink, barrier: &Arc<Barrier>) {
         // Create another thread that reads packets, this allows the main loop
         // wait to be interrupted while the XOT socket read is blocked.
-        let recv_queue = Arc::new(TracingMutex::new(VecDeque::<io::Result<Bytes>>::new()));
+        let recv_queue = Arc::new(Mutex::new(VecDeque::<io::Result<Bytes>>::new()));
 
         thread::Builder::new().name("x25_vc_2".to_string()).spawn({
             let recv_queue = Arc::clone(&recv_queue);

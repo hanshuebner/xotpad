@@ -18,6 +18,10 @@ fn main() -> io::Result<()> {
 
     let config = load_config(&args);
 
+    if config.x25_params.addr.is_null() {
+        eprintln!("warning: local address is null, use the --address option to specify an address");
+    }
+
     let listener = if args.should_listen {
         if let Ok(listener) = TcpListener::bind((args.xot_bind_addr.as_str(), xot::TCP_PORT)) {
             Some(listener)

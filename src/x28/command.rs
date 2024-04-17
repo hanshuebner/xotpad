@@ -1,5 +1,4 @@
 use libxotpad::x121::X121Addr;
-use std::fmt::Write;
 use std::str::FromStr;
 
 #[derive(PartialEq, Debug)]
@@ -104,23 +103,6 @@ fn parse_set_params(s: &str) -> Result<Vec<(u8, u8)>, String> {
             Ok((param, value))
         })
         .collect()
-}
-
-pub fn format_params(params: &[(u8, Option<u8>)]) -> String {
-    let mut s = String::new();
-
-    for &(param, value) in params {
-        if !s.is_empty() {
-            s.push_str(", ");
-        }
-
-        match value {
-            Some(value) => write!(&mut s, "{param}:{value}"),
-            None => write!(&mut s, "{param}:INV"),
-        };
-    }
-
-    s
 }
 
 #[cfg(test)]

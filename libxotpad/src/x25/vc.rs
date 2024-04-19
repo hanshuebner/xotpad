@@ -27,7 +27,7 @@ pub trait Vc {
 
     fn recv(&self) -> io::Result<Option<(Bytes, bool)>>;
 
-    fn reset(&self, cause: u8, diagnostic_code: u8) -> io::Result<()>;
+    fn reset(&self, cause_code: u8, diagnostic_code: u8) -> io::Result<()>;
 
     fn flush(&self) -> io::Result<()>;
 
@@ -128,11 +128,11 @@ impl Svc {
                 match *state {
                     VcState::Cleared(ClearInitiator::Remote(ref clear_request), _) => {
                         let X25ClearRequest {
-                            cause,
+                            cause_code,
                             diagnostic_code,
                             ..
                         } = clear_request;
-                        let msg = format!("C:{cause} D:{diagnostic_code}");
+                        let msg = format!("C:{cause_code} D:{diagnostic_code}");
                         return Err(io::Error::new(io::ErrorKind::ConnectionReset, msg));
                     }
                     VcState::WaitClearConfirm(_, ClearInitiator::TimeOut(_))
@@ -198,7 +198,7 @@ impl Svc {
         Ok(SvcIncomingCall(svc, call_request))
     }
 
-    pub fn clear(self, cause: u8, diagnostic_code: u8) -> io::Result<()> {
+    pub fn clear(self, cause_code: u8, diagnostic_code: u8) -> io::Result<()> {
         let inner = self.0;
 
         {
@@ -208,11 +208,16 @@ impl Svc {
 
                 if !state.is_connected() {
                     // TODO: what about if the state was cleared by the peer?
-                    // is that an error... we don't get to clear with OUR cause...
+                    // is that an error... we don't get to clear with OUR cause_code...
                     todo!("invalid state");
                 }
 
-                inner.clear_request(&mut state, cause, diagnostic_code, ClearInitiator::Local);
+                inner.clear_request(
+                    &mut state,
+                    cause_code,
+                    diagnostic_code,
+                    ClearInitiator::Local,
+                );
                 inner.engine_wait.notify_all();
             }
 
@@ -256,7 +261,7 @@ impl Svc {
 
         match *state {
             VcState::Cleared(ClearInitiator::Remote(ref clear_request), _) => {
-                Some((clear_request.cause, clear_request.diagnostic_code))
+                Some((clear_request.cause_code, clear_request.diagnostic_code))
             }
             _ => None,
         }
@@ -320,7 +325,7 @@ impl SvcIncomingCall {
         Ok(svc)
     }
 
-    pub fn clear(self, cause: u8, diagnostic_code: u8) -> io::Result<()> {
+    pub fn clear(self, cause_code: u8, diagnostic_code: u8) -> io::Result<()> {
         let inner = self.0 .0;
 
         let mut state = inner.state.0.lock().unwrap();
@@ -334,7 +339,7 @@ impl SvcIncomingCall {
         let clear_request = X25ClearRequest {
             modulo: inner.params.read().unwrap().modulo,
             channel: inner.channel,
-            cause,
+            cause_code,
             diagnostic_code,
             called_addr: X121Addr::null(),
             calling_addr: X121Addr::null(),
@@ -432,7 +437,7 @@ impl Vc for Svc {
         }
     }
 
-    fn reset(&self, cause: u8, diagnostic_code: u8) -> io::Result<()> {
+    fn reset(&self, cause_code: u8, diagnostic_code: u8) -> io::Result<()> {
         let inner = &self.0;
 
         // Send the reset request packet.
@@ -444,7 +449,7 @@ impl Vc for Svc {
                 todo!("invalid state");
             }
 
-            inner.reset_request(&mut state, cause, diagnostic_code);
+            inner.reset_request(&mut state, cause_code, diagnostic_code);
             inner.engine_wait.notify_all();
         }
 
@@ -859,14 +864,14 @@ impl VcInner {
     fn clear_request(
         &self,
         state: &mut VcState,
-        cause: u8,
+        cause_code: u8,
         diagnostic_code: u8,
         initiator: ClearInitiator,
     ) {
         let clear_request = X25ClearRequest {
             modulo: self.params.read().unwrap().modulo,
             channel: self.channel,
-            cause,
+            cause_code,
             diagnostic_code,
             called_addr: X121Addr::null(),
             calling_addr: X121Addr::null(),
@@ -899,11 +904,11 @@ impl VcInner {
         }
     }
 
-    fn reset_request(&self, state: &mut VcState, cause: u8, diagnostic_code: u8) {
+    fn reset_request(&self, state: &mut VcState, cause_code: u8, diagnostic_code: u8) {
         let reset_request = X25ResetRequest {
             modulo: self.params.read().unwrap().modulo,
             channel: self.channel,
-            cause,
+            cause_code,
             diagnostic_code,
         };
 

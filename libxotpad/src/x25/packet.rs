@@ -352,7 +352,7 @@ impl From<X25CallAccept> for X25Packet {
 pub struct X25ClearRequest {
     pub modulo: X25Modulo,
     pub channel: u16,
-    pub cause: u8,
+    pub cause_code: u8,
     pub diagnostic_code: u8,
     pub called_addr: X121Addr,
     pub calling_addr: X121Addr,
@@ -367,7 +367,7 @@ impl X25ClearRequest {
 
         len += encode_packet_header(self.modulo, 0, self.channel, 0x13, buf)?;
 
-        buf.put_u8(self.cause);
+        buf.put_u8(self.cause_code);
         len += 1;
 
         let has_diagnostic_code = self.diagnostic_code > 0;
@@ -422,7 +422,7 @@ impl X25ClearRequest {
 
         buf.advance(3);
 
-        let cause = buf.get_u8();
+        let cause_code = buf.get_u8();
 
         let diagnostic_code = if buf.has_remaining() { buf.get_u8() } else { 0 };
 
@@ -447,7 +447,7 @@ impl X25ClearRequest {
         Ok(X25ClearRequest {
             modulo,
             channel,
-            cause,
+            cause_code,
             diagnostic_code,
             called_addr,
             calling_addr,
@@ -887,7 +887,7 @@ impl From<X25ReceiveNotReady> for X25Packet {
 pub struct X25ResetRequest {
     pub modulo: X25Modulo,
     pub channel: u16,
-    pub cause: u8,
+    pub cause_code: u8,
     pub diagnostic_code: u8,
 }
 
@@ -898,7 +898,7 @@ impl X25ResetRequest {
 
         len += encode_packet_header(self.modulo, 0, self.channel, 0x1b, buf)?;
 
-        buf.put_u8(self.cause);
+        buf.put_u8(self.cause_code);
         len += 1;
 
         if self.diagnostic_code > 0 {
@@ -932,14 +932,14 @@ impl X25ResetRequest {
 
         buf.advance(3);
 
-        let cause = buf.get_u8();
+        let cause_code = buf.get_u8();
 
         let diagnostic_code = if buf.has_remaining() { buf.get_u8() } else { 0 };
 
         Ok(X25ResetRequest {
             modulo,
             channel,
-            cause,
+            cause_code,
             diagnostic_code,
         })
     }
@@ -1508,7 +1508,7 @@ mod tests {
         let clear_request = X25ClearRequest {
             modulo: X25Modulo::Normal,
             channel: 1,
-            cause: 1,
+            cause_code: 1,
             diagnostic_code: 0,
             called_addr: X121Addr::null(),
             calling_addr: X121Addr::null(),
@@ -1528,7 +1528,7 @@ mod tests {
         let clear_request = X25ClearRequest {
             modulo: X25Modulo::Normal,
             channel: 1,
-            cause: 1,
+            cause_code: 1,
             diagnostic_code: 1,
             called_addr: X121Addr::null(),
             calling_addr: X121Addr::null(),
@@ -1548,7 +1548,7 @@ mod tests {
         let clear_request = X25ClearRequest {
             modulo: X25Modulo::Normal,
             channel: 1,
-            cause: 1,
+            cause_code: 1,
             diagnostic_code: 0,
             called_addr: X121Addr::from_str("1234").unwrap(),
             calling_addr: X121Addr::from_str("567").unwrap(),
@@ -1568,7 +1568,7 @@ mod tests {
         let clear_request = X25ClearRequest {
             modulo: X25Modulo::Normal,
             channel: 1,
-            cause: 1,
+            cause_code: 1,
             diagnostic_code: 0,
             called_addr: X121Addr::null(),
             calling_addr: X121Addr::null(),
@@ -1600,7 +1600,7 @@ mod tests {
         let clear_request = X25ClearRequest {
             modulo: X25Modulo::Normal,
             channel: 1,
-            cause: 1,
+            cause_code: 1,
             diagnostic_code: 0,
             called_addr: X121Addr::null(),
             calling_addr: X121Addr::null(),
@@ -1633,7 +1633,7 @@ mod tests {
 
         assert_eq!(clear_request.modulo, X25Modulo::Normal);
         assert_eq!(clear_request.channel, 1);
-        assert_eq!(clear_request.cause, 1);
+        assert_eq!(clear_request.cause_code, 1);
         assert_eq!(clear_request.diagnostic_code, 0);
         assert!(clear_request.called_addr.is_null());
         assert!(clear_request.calling_addr.is_null());
@@ -1659,7 +1659,7 @@ mod tests {
 
         assert_eq!(clear_request.modulo, X25Modulo::Normal);
         assert_eq!(clear_request.channel, 1);
-        assert_eq!(clear_request.cause, 1);
+        assert_eq!(clear_request.cause_code, 1);
         assert_eq!(clear_request.diagnostic_code, 1);
         assert!(clear_request.called_addr.is_null());
         assert!(clear_request.calling_addr.is_null());
@@ -1685,7 +1685,7 @@ mod tests {
 
         assert_eq!(clear_request.modulo, X25Modulo::Normal);
         assert_eq!(clear_request.channel, 1);
-        assert_eq!(clear_request.cause, 1);
+        assert_eq!(clear_request.cause_code, 1);
         assert_eq!(clear_request.diagnostic_code, 0);
 
         assert_eq!(
@@ -1720,7 +1720,7 @@ mod tests {
 
         assert_eq!(clear_request.modulo, X25Modulo::Normal);
         assert_eq!(clear_request.channel, 1);
-        assert_eq!(clear_request.cause, 1);
+        assert_eq!(clear_request.cause_code, 1);
         assert_eq!(clear_request.diagnostic_code, 0);
         assert!(clear_request.called_addr.is_null());
         assert!(clear_request.calling_addr.is_null());
@@ -1758,7 +1758,7 @@ mod tests {
 
         assert_eq!(clear_request.modulo, X25Modulo::Normal);
         assert_eq!(clear_request.channel, 1);
-        assert_eq!(clear_request.cause, 1);
+        assert_eq!(clear_request.cause_code, 1);
         assert_eq!(clear_request.diagnostic_code, 0);
         assert!(clear_request.called_addr.is_null());
         assert!(clear_request.calling_addr.is_null());
@@ -2250,7 +2250,7 @@ mod tests {
         let reset_request = X25ResetRequest {
             modulo: X25Modulo::Normal,
             channel: 1,
-            cause: 5,
+            cause_code: 5,
             diagnostic_code: 0,
         };
 
@@ -2266,7 +2266,7 @@ mod tests {
         let reset_request = X25ResetRequest {
             modulo: X25Modulo::Normal,
             channel: 1,
-            cause: 5,
+            cause_code: 5,
             diagnostic_code: 1,
         };
 
@@ -2295,7 +2295,7 @@ mod tests {
 
         assert_eq!(reset_request.modulo, X25Modulo::Normal);
         assert_eq!(reset_request.channel, 1);
-        assert_eq!(reset_request.cause, 5);
+        assert_eq!(reset_request.cause_code, 5);
         assert_eq!(reset_request.diagnostic_code, 0);
     }
 
@@ -2317,7 +2317,7 @@ mod tests {
 
         assert_eq!(reset_request.modulo, X25Modulo::Normal);
         assert_eq!(reset_request.channel, 1);
-        assert_eq!(reset_request.cause, 5);
+        assert_eq!(reset_request.cause_code, 5);
         assert_eq!(reset_request.diagnostic_code, 1);
     }
 

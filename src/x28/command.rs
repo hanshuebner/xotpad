@@ -1,6 +1,7 @@
 use libxotpad::x121::X121Addr;
 use std::str::FromStr;
 
+/// X.28 command _signal_.
 #[derive(PartialEq, Debug)]
 pub enum X28Command {
     Selection(X121Addr),

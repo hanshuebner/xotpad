@@ -2,6 +2,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use either::Either::{self, Left, Right};
 use libxotpad::x121::X121Addr;
+use libxotpad::x25::packet::X25CallRequest;
 use libxotpad::x25::{Svc, Vc, X25Params};
 use libxotpad::x29::{X29Pad, X29PadSignal};
 use libxotpad::x3::X3Params as _;
@@ -17,7 +18,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tracing_mutex::stdsync::{Mutex, RwLock};
 
-use crate::x28::{format_params, X28Command};
+use crate::x28::{X28Command, X28Signal};
 use crate::x3::X3Params;
 
 pub fn call(addr: &X121Addr, x25_params: &X25Params, resolver: &XotResolver) -> io::Result<Svc> {
@@ -35,7 +36,7 @@ enum PadLocalState {
 }
 
 enum PadInput {
-    Call,
+    Call(X25CallRequest),
     Local(io::Result<Option<(u8, Instant)>>),
     Remote(io::Result<Option<Either<Bytes, X29PadSignal>>>),
     TimeOut,
@@ -147,6 +148,8 @@ pub fn run(
                         continue;
                     }
 
+                    let call_request = incoming_call.request().clone();
+
                     let svc = incoming_call.accept().unwrap();
 
                     let x25_params = svc.params();
@@ -158,7 +161,7 @@ pub fn run(
 
                     current_call.replace((x29_pad, x25_params));
 
-                    if tx.send(PadInput::Call).is_err() {
+                    if tx.send(PadInput::Call(call_request)).is_err() {
                         break;
                     }
                 }
@@ -170,7 +173,8 @@ pub fn run(
     let mut last_data_time = None;
 
     if local_state == PadLocalState::Command {
-        print!("*");
+        print_prompt();
+
         io::stdout().flush()?;
     }
 
@@ -184,8 +188,8 @@ pub fn run(
         let mut current_call = current_call.lock().unwrap();
 
         match input {
-            PadInput::Call => {
-                println!("\r\nyou got a call!\r\n");
+            PadInput::Call(call_request) => {
+                print_signal(X28Signal::Connected(Some(call_request)), true);
 
                 local_state = PadLocalState::Data;
 
@@ -203,31 +207,42 @@ pub fn run(
 
                 x29_pad.into_svc().clear(0, 0)?;
 
-                print!("\r\nCLR CONF\r\n");
-
                 if is_one_shot {
                     break;
                 }
 
-                ensure_command(&mut local_state);
+                print_signal(X28Signal::Cleared(None), true);
+
+                ensure_command(&mut local_state, false);
             }
             PadInput::Remote(Ok(None)) => {
-                // XXX: we can tell whether we should show anything or not, based
-                // on whether the call still "exists" otherwise we would have shown
-                // the important info before...
-                if current_call.is_some() {
+                // If there is a current call then the clear was initiated by the other
+                // party and we should display the cleared signal, otherwise initiated
+                // the clear request and do not need to display a signal.
+                let signal = if current_call.is_some() {
                     let (x29_pad, _) = current_call.take().unwrap();
 
-                    let (cause, diagnostic_code) = x29_pad.into_svc().cleared().unwrap_or((0, 0));
+                    let (cause_code, diagnostic_code) =
+                        x29_pad.into_svc().cleared().unwrap_or((0, 0));
 
-                    println!("CLR xxx C:{cause} D:{diagnostic_code}");
-                }
+                    Some(X28Signal::Cleared(Some((cause_code, diagnostic_code))))
+                } else {
+                    None
+                };
 
                 if is_one_shot {
                     break;
                 }
 
-                ensure_command(&mut local_state);
+                let mut new_line = true;
+
+                if let Some(signal) = signal {
+                    print_signal(signal, true);
+
+                    new_line = false;
+                }
+
+                ensure_command(&mut local_state, new_line);
             }
             PadInput::Remote(Err(err)) => {
                 println!("remote error: {err:?}");
@@ -238,7 +253,7 @@ pub fn run(
                     break;
                 }
 
-                ensure_command(&mut local_state);
+                ensure_command(&mut local_state, true);
             }
             PadInput::Local(Ok(None) | Err(_)) => {
                 if let Some((x29_pad, _)) = current_call.take() {
@@ -260,7 +275,7 @@ pub fn run(
                         match command {
                             Ok(X28Command::Selection(ref addr)) => {
                                 if current_call.is_some() {
-                                    print!("ERROR... ENGAGED!\r\n");
+                                    print_signal(X28Signal::Error, false); // Connected
                                 } else {
                                     match call(addr, x25_params, resolver) {
                                         Ok(svc) => {
@@ -269,6 +284,8 @@ pub fn run(
                                             let x29_pad = X29Pad::new(svc, Arc::clone(&x3_params));
 
                                             current_call.replace((x29_pad, x25_params));
+
+                                            print_signal(X28Signal::Connected(None), false);
 
                                             local_state = PadLocalState::Data;
 
@@ -283,8 +300,10 @@ pub fn run(
                             Ok(X28Command::ClearRequest) => {
                                 if let Some((x29_pad, _)) = current_call.take() {
                                     x29_pad.into_svc().clear(0, 0)?;
+
+                                    print_signal(X28Signal::Cleared(None), false);
                                 } else {
-                                    print!("ERROR... NOT CONNECTED!\r\n");
+                                    print_signal(X28Signal::Error, false); // Not connected
                                 }
 
                                 if is_one_shot {
@@ -292,19 +311,31 @@ pub fn run(
                                 }
                             }
                             Ok(X28Command::Read(ref request)) => {
-                                read_params(&x3_params.read().unwrap(), request);
+                                let response = read_params(&x3_params.read().unwrap(), request);
+
+                                print_signal(X28Signal::LocalParams(response), false);
                             }
                             Ok(X28Command::Set(ref request)) => {
-                                set_params(&mut x3_params.write().unwrap(), request);
+                                let response = set_params(&mut x3_params.write().unwrap(), request);
+
+                                // Only invalid requests are output by the set command.
+                                let invalid: Vec<(u8, Option<u8>)> =
+                                    response.into_iter().filter(|(p, r)| r.is_none()).collect();
+
+                                if !invalid.is_empty() {
+                                    print_signal(X28Signal::LocalParams(invalid), false);
+                                }
                             }
                             Ok(X28Command::SetRead(ref request)) => {
-                                set_read_params(&mut x3_params.write().unwrap(), request);
+                                let response = set_params(&mut x3_params.write().unwrap(), request);
+
+                                print_signal(X28Signal::LocalParams(response), false);
                             }
                             Ok(X28Command::Status) => {
                                 if current_call.is_some() {
-                                    print!("ENGAGED\r\n");
+                                    print_signal(X28Signal::Engaged, false);
                                 } else {
-                                    print!("FREE\r\n");
+                                    print_signal(X28Signal::Free, false);
                                 }
                             }
                             Ok(X28Command::ClearInvitation) => {
@@ -313,7 +344,7 @@ pub fn run(
 
                                     // TODO: we need to add a timeout...
                                 } else {
-                                    print!("ERROR... NOT CONNECTED!\r\n");
+                                    print_signal(X28Signal::Error, false); // Not connected
                                 }
                             }
                             Ok(X28Command::Exit) => {
@@ -323,8 +354,8 @@ pub fn run(
 
                                 break;
                             }
-                            Err(err) => {
-                                print!("{err}\r\n");
+                            Err(_) => {
+                                print_signal(X28Signal::Error, false);
                             }
                         }
                     }
@@ -332,7 +363,7 @@ pub fn run(
                     if current_call.is_some() {
                         local_state = PadLocalState::Data;
                     } else {
-                        print!("*");
+                        print_prompt();
                     }
                 }
                 (PadLocalState::Command, /* Ctrl+C */ 0x03) => {
@@ -346,7 +377,8 @@ pub fn run(
 
                     command_buf.clear();
 
-                    print!("\r\n*");
+                    print!("\r\n");
+                    print_prompt();
                 }
                 (PadLocalState::Command, /* Ctrl+P */ 0x10) => {
                     if command_buf.is_empty() && current_call.is_some() {
@@ -372,7 +404,7 @@ pub fn run(
                     io::stdout().write_all(&[byte])?;
                 }
                 (PadLocalState::Data, /* Ctrl+P */ 0x10) => {
-                    ensure_command(&mut local_state);
+                    ensure_command(&mut local_state, true);
                 }
                 (PadLocalState::Data, byte) => 'input: {
                     let x3_params = x3_params.read().unwrap();
@@ -507,12 +539,16 @@ fn send_data(x29_pad: &X29Pad, buf: &mut BytesMut) -> io::Result<()> {
     x29_pad.send_data(user_data.into())
 }
 
-fn ensure_command(state: &mut PadLocalState) {
+fn ensure_command(state: &mut PadLocalState, new_line: bool) {
     if *state == PadLocalState::Command {
         return;
     }
 
-    print!("\r\n*");
+    if new_line {
+        print!("\r\n");
+    }
+
+    print_prompt();
 
     *state = PadLocalState::Command;
 }
@@ -538,25 +574,16 @@ fn spawn_remote_thread(x29_pad: &X29Pad, channel: Sender<PadInput>) -> JoinHandl
         .unwrap()
 }
 
-fn read_params(params: &X3Params, request: &[u8]) {
-    let response: Vec<(u8, Option<u8>)> = if request.is_empty() {
-        params.all().iter().map(|&(p, v)| (p, Some(v))).collect()
-    } else {
-        request.iter().map(|&p| (p, params.get(p))).collect()
-    };
-
-    print!("PAR {}\r\n", format_params(&response));
-}
-
-fn set_params(params: &mut X3Params, request: &[(u8, u8)]) {
-    for &(param, value) in request {
-        // TODO: should we just ignore errors?
-        let _ = params.set(param, value);
+fn read_params(params: &X3Params, request: &[u8]) -> Vec<(u8, Option<u8>)> {
+    if request.is_empty() {
+        return params.all().iter().map(|&(p, v)| (p, Some(v))).collect();
     }
+
+    request.iter().map(|&p| (p, params.get(p))).collect()
 }
 
-fn set_read_params(params: &mut X3Params, request: &[(u8, u8)]) {
-    let response: Vec<(u8, Option<u8>)> = request
+fn set_params(params: &mut X3Params, request: &[(u8, u8)]) -> Vec<(u8, Option<u8>)> {
+    request
         .iter()
         .map(|&(p, v)| {
             if params.set(p, v).is_err() {
@@ -565,9 +592,7 @@ fn set_read_params(params: &mut X3Params, request: &[(u8, u8)]) {
 
             (p, params.get(p))
         })
-        .collect();
-
-    print!("PAR {}\r\n", format_params(&response));
+        .collect()
 }
 
 fn recv_input(channel: &Receiver<PadInput>, timeout: Option<Duration>) -> Option<PadInput> {
@@ -624,4 +649,16 @@ fn handle_line_delete(buf: &mut BytesMut) -> io::Result<()> {
 fn handle_line_display(buf: &BytesMut) -> io::Result<()> {
     io::stdout().write_all(b"\r\n")?;
     io::stdout().write_all(buf)
+}
+
+fn print_prompt() {
+    print!("*");
+}
+
+fn print_signal(signal: X28Signal, new_line: bool) {
+    if new_line {
+        print!("\r\n");
+    }
+
+    print!("{signal}\r\n");
 }

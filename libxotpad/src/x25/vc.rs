@@ -46,6 +46,7 @@ enum VcState {
 
     // These are our custom ones...
     Called(X25CallRequest),
+    #[allow(dead_code)] // TODO
     Cleared(ClearInitiator, Option<X25ClearConfirm>),
     OutOfOrder,
 }
@@ -70,6 +71,7 @@ struct DataTransferState {
 enum ClearInitiator {
     Local,
     Remote(X25ClearRequest),
+    #[allow(dead_code)] // TODO
     TimeOut(u8),
 }
 
@@ -274,12 +276,15 @@ impl Svc {
 
         let barrier = Arc::new(Barrier::new(2));
 
-        thread::Builder::new().name("x25_vc_1".to_string()).spawn({
-            let inner = Arc::clone(&inner);
-            let barrier = Arc::clone(&barrier);
+        thread::Builder::new()
+            .name("x25_vc_1".to_string())
+            .spawn({
+                let inner = Arc::clone(&inner);
+                let barrier = Arc::clone(&barrier);
 
-            move || inner.run(recv_link, &barrier)
-        });
+                move || inner.run(recv_link, &barrier)
+            })
+            .expect("failed to spawn thread");
 
         barrier.wait();
 
@@ -563,23 +568,26 @@ impl VcInner {
         // wait to be interrupted while the XOT socket read is blocked.
         let recv_queue = Arc::new(Mutex::new(VecDeque::<io::Result<Bytes>>::new()));
 
-        thread::Builder::new().name("x25_vc_2".to_string()).spawn({
-            let recv_queue = Arc::clone(&recv_queue);
-            let engine_wait = Arc::clone(&self.engine_wait);
+        thread::Builder::new()
+            .name("x25_vc_2".to_string())
+            .spawn({
+                let recv_queue = Arc::clone(&recv_queue);
+                let engine_wait = Arc::clone(&self.engine_wait);
 
-            move || loop {
-                let packet = recv_link.recv();
+                move || loop {
+                    let packet = recv_link.recv();
 
-                let is_err = packet.is_err();
+                    let is_err = packet.is_err();
 
-                recv_queue.lock().unwrap().push_back(packet);
-                engine_wait.notify_all();
+                    recv_queue.lock().unwrap().push_back(packet);
+                    engine_wait.notify_all();
 
-                if is_err {
-                    break;
+                    if is_err {
+                        break;
+                    }
                 }
-            }
-        });
+            })
+            .expect("failed to spawn thread");
 
         barrier.wait();
 
@@ -614,8 +622,8 @@ impl VcInner {
             };
 
             // Validate the packet.
-            if let Some(ref packet) = packet {
-                // ...
+            if let Some(ref _packet) = packet {
+                // TODO...
             }
 
             // Handle the packet.
@@ -855,7 +863,7 @@ impl VcInner {
         self.change_state(state, next_state);
     }
 
-    fn out_of_order(&self, state: &mut VcState, err: io::Error) {
+    fn out_of_order(&self, state: &mut VcState, _err: io::Error) {
         let next_state = VcState::OutOfOrder;
 
         self.change_state(state, next_state);

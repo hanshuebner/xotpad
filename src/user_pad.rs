@@ -79,7 +79,8 @@ pub fn run(
 
                 let _ = tx.send(PadInput::Local(Ok(None)));
             }
-        });
+        })
+        .expect("failed to spawn thread");
 
     let mut local_state = PadLocalState::Command;
     let mut is_one_shot = false;
@@ -165,7 +166,8 @@ pub fn run(
                         break;
                     }
                 }
-            });
+            })
+            .expect("failed to spawn thread");
     }
 
     let mut command_buf = BytesMut::with_capacity(128);
@@ -263,13 +265,21 @@ pub fn run(
             }
             PadInput::Local(Ok(Some((byte, input_time)))) => match (local_state, byte) {
                 (PadLocalState::Command, /* CR */ 0x0d) => {
+                    print!("\r\n");
+
                     let buf = command_buf.split();
 
                     let line = str::from_utf8(&buf[..]).unwrap().trim();
 
-                    print!("\r\n");
-
                     if !line.is_empty() {
+                        if line.to_uppercase() == "EXIT" {
+                            if let Some((x29_pad, _)) = current_call.take() {
+                                x29_pad.into_svc().clear(0, 0)?;
+                            }
+
+                            break;
+                        }
+
                         let command = X28Command::from_str(line);
 
                         match command {
@@ -297,7 +307,7 @@ pub fn run(
                                     }
                                 }
                             }
-                            Ok(X28Command::ClearRequest) => {
+                            Ok(X28Command::Clear) => {
                                 if let Some((x29_pad, _)) = current_call.take() {
                                     x29_pad.into_svc().clear(0, 0)?;
 
@@ -320,7 +330,7 @@ pub fn run(
 
                                 // Only invalid requests are output by the set command.
                                 let invalid: Vec<(u8, Option<u8>)> =
-                                    response.into_iter().filter(|(p, r)| r.is_none()).collect();
+                                    response.into_iter().filter(|(_, r)| r.is_none()).collect();
 
                                 if !invalid.is_empty() {
                                     print_signal(X28Signal::LocalParams(invalid), false);
@@ -338,21 +348,14 @@ pub fn run(
                                     print_signal(X28Signal::Free, false);
                                 }
                             }
-                            Ok(X28Command::ClearInvitation) => {
+                            Ok(X28Command::InviteClear) => {
                                 if let Some((x29_pad, _)) = current_call.as_ref() {
-                                    x29_pad.send_clear_invitation()?;
+                                    x29_pad.invite_clear()?;
 
                                     // TODO: we need to add a timeout...
                                 } else {
                                     print_signal(X28Signal::Error, false); // Not connected
                                 }
-                            }
-                            Ok(X28Command::Exit) => {
-                                if let Some((x29_pad, _)) = current_call.take() {
-                                    x29_pad.into_svc().clear(0, 0)?;
-                                }
-
-                                break;
                             }
                             Err(_) => {
                                 print_signal(X28Signal::Error, false);
@@ -571,7 +574,7 @@ fn spawn_remote_thread(x29_pad: &X29Pad, channel: Sender<PadInput>) -> JoinHandl
                 break;
             }
         })
-        .unwrap()
+        .expect("failed to spawn thread")
 }
 
 fn read_params(params: &X3Params, request: &[u8]) -> Vec<(u8, Option<u8>)> {

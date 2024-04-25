@@ -5,13 +5,12 @@ use std::str::FromStr;
 #[derive(PartialEq, Debug)]
 pub enum X28Command {
     Selection(X121Addr),
-    ClearRequest,
+    Clear,
     Read(Vec<u8>),
     Set(Vec<(u8, u8)>),
     SetRead(Vec<(u8, u8)>),
     Status,
-    ClearInvitation,
-    Exit,
+    InviteClear,
 }
 
 impl FromStr for X28Command {
@@ -26,15 +25,15 @@ impl FromStr for X28Command {
         match &command[..] {
             "CALL" => {
                 if rest.is_empty() {
-                    return Err("addr required, dude!".into());
+                    return Err("address argument required".into());
                 }
 
                 match X121Addr::from_str(rest) {
                     Ok(addr) => Ok(X28Command::Selection(addr)),
-                    Err(_) => Err("invalid addr".into()),
+                    Err(_) => Err("invalid address".into()),
                 }
             }
-            "CLR" | "CLEAR" => Ok(X28Command::ClearRequest),
+            "CLR" | "CLEAR" => Ok(X28Command::Clear),
             "PAR?" | "PAR" | "PARAMETER" | "READ" => {
                 let params = parse_read_params(rest)?;
 
@@ -44,7 +43,7 @@ impl FromStr for X28Command {
                 let params = parse_set_params(rest)?;
 
                 if params.is_empty() {
-                    return Err("params required!".into());
+                    return Err("parameters argument required".into());
                 }
 
                 Ok(X28Command::Set(params))
@@ -53,14 +52,13 @@ impl FromStr for X28Command {
                 let params = parse_set_params(rest)?;
 
                 if params.is_empty() {
-                    return Err("params required!".into());
+                    return Err("parameters argument required".into());
                 }
 
                 Ok(X28Command::SetRead(params))
             }
             "STAT" | "STATUS" => Ok(X28Command::Status),
-            "ICLR" | "ICLEAR" => Ok(X28Command::ClearInvitation),
-            "EXIT" => Ok(X28Command::Exit),
+            "ICLR" | "ICLEAR" => Ok(X28Command::InviteClear),
             _ => Err("unrecognized command".into()),
         }
     }
@@ -76,7 +74,7 @@ fn parse_read_params(s: &str) -> Result<Vec<u8>, String> {
     }
 
     s.split(',')
-        .map(|a| u8::from_str(a.trim()).map_err(|_| "invalid param".into()))
+        .map(|a| u8::from_str(a.trim()).map_err(|_| "invalid parameter".into()))
         .collect()
 }
 
@@ -90,11 +88,11 @@ fn parse_set_params(s: &str) -> Result<Vec<(u8, u8)>, String> {
     s.split(',')
         .map(|a| {
             let Some((param, value)) = a.split_once(':') else {
-                return Err("invalid set argument".into());
+                return Err("invalid parameters argument".into());
             };
 
             let Ok(param) = u8::from_str(param.trim()) else {
-                return Err("invalid param".into());
+                return Err("invalid parameter".into());
             };
 
             let Ok(value) = u8::from_str(value.trim()) else {
@@ -124,9 +122,9 @@ mod tests {
     }
 
     #[test]
-    fn from_str_clear_request() {
-        assert_eq!(X28Command::from_str("clr"), Ok(X28Command::ClearRequest));
-        assert_eq!(X28Command::from_str("clear"), Ok(X28Command::ClearRequest));
+    fn from_str_clear() {
+        assert_eq!(X28Command::from_str("clr"), Ok(X28Command::Clear));
+        assert_eq!(X28Command::from_str("clear"), Ok(X28Command::Clear));
     }
 
     #[test]
@@ -210,19 +208,8 @@ mod tests {
     }
 
     #[test]
-    fn from_str_clear_invitation() {
-        assert_eq!(
-            X28Command::from_str("iclr"),
-            Ok(X28Command::ClearInvitation)
-        );
-        assert_eq!(
-            X28Command::from_str("iclear"),
-            Ok(X28Command::ClearInvitation)
-        );
-    }
-
-    #[test]
-    fn from_str_exit() {
-        assert_eq!(X28Command::from_str("exit"), Ok(X28Command::Exit));
+    fn from_str_invite_clear() {
+        assert_eq!(X28Command::from_str("iclr"), Ok(X28Command::InviteClear));
+        assert_eq!(X28Command::from_str("iclear"), Ok(X28Command::InviteClear));
     }
 }

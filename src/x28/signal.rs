@@ -46,7 +46,7 @@ fn format_params(params: &[(u8, Option<u8>)]) -> String {
             s.push_str(", ");
         }
 
-        match value {
+        let _ = match value {
             Some(value) => write!(&mut s, "{param}:{value}"),
             None => write!(&mut s, "{param}:INV"),
         };

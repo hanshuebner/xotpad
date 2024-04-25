@@ -2,7 +2,7 @@ use bytes::{Bytes, BytesMut};
 use either::Either::{self, Left, Right};
 use std::collections::VecDeque;
 use std::io;
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread;
 use tracing_mutex::stdsync::{Condvar, Mutex, RwLock};
@@ -52,76 +52,79 @@ impl X29Pad {
         let recv_queue = Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
         let indicate_channel = Arc::new(Mutex::new(None));
 
-        thread::Builder::new().name("x29_pad".to_string()).spawn({
-            let svc = svc.clone();
-            let recv_queue = Arc::clone(&recv_queue);
+        thread::Builder::new()
+            .name("x29_pad".to_string())
+            .spawn({
+                let svc = svc.clone();
+                let recv_queue = Arc::clone(&recv_queue);
 
-            move || loop {
-                let result = svc.recv();
+                move || loop {
+                    let result = svc.recv();
 
-                match result {
-                    Ok(Some((data, true))) => {
-                        let message = X29PadMessage::decode(data);
+                    match result {
+                        Ok(Some((data, true))) => {
+                            let message = X29PadMessage::decode(data);
 
-                        match message {
-                            Ok(X29PadMessage::Set(request)) => {
-                                // According to the specification, a response message is only sent
-                                // if there are errors. It is not clear to me how that can be
-                                // handled by the remote party - how do they know how to long to
-                                // wait for an error response versus no response (indicating
-                                // success)?
-                                if let Some(message) =
-                                    set_params(&mut *params.write().unwrap(), &request)
-                                {
-                                    if let Err(err) = send_message(&svc, message) {
+                            match message {
+                                Ok(X29PadMessage::Set(request)) => {
+                                    // According to the specification, a response message is only sent
+                                    // if there are errors. It is not clear to me how that can be
+                                    // handled by the remote party - how do they know how to long to
+                                    // wait for an error response versus no response (indicating
+                                    // success)?
+                                    if let Some(message) =
+                                        set_params(&mut *params.write().unwrap(), &request)
+                                    {
+                                        if let Err(_err) = send_message(&svc, message) {
+                                            todo!();
+                                        }
+                                    }
+                                }
+                                Ok(X29PadMessage::Read(request)) => {
+                                    let message = read_params(&*params.read().unwrap(), &request);
+
+                                    if let Err(_err) = send_message(&svc, message) {
                                         todo!();
                                     }
                                 }
-                            }
-                            Ok(X29PadMessage::Read(request)) => {
-                                let message = read_params(&*params.read().unwrap(), &request);
+                                Ok(X29PadMessage::SetRead(request)) => {
+                                    let message =
+                                        set_read_params(&mut *params.write().unwrap(), &request);
 
-                                if let Err(err) = send_message(&svc, message) {
-                                    todo!();
+                                    if let Err(_err) = send_message(&svc, message) {
+                                        todo!();
+                                    }
                                 }
-                            }
-                            Ok(X29PadMessage::SetRead(request)) => {
-                                let message =
-                                    set_read_params(&mut *params.write().unwrap(), &request);
+                                Ok(X29PadMessage::Indicate(_response)) => todo!(),
+                                Ok(X29PadMessage::ClearInvitation) => {
+                                    let signal = X29PadSignal::ClearInvitation;
 
-                                if let Err(err) = send_message(&svc, message) {
-                                    todo!();
+                                    queue_recv(&recv_queue, Ok(Some(Right(signal))));
                                 }
+                                Err(_) => todo!(),
                             }
-                            Ok(X29PadMessage::Indicate(response)) => todo!(),
-                            Ok(X29PadMessage::ClearInvitation) => {
-                                let signal = X29PadSignal::ClearInvitation;
+                        }
+                        Ok(Some((data, false))) => {
+                            queue_recv(&recv_queue, Ok(Some(Left(data))));
+                        }
+                        Ok(None) => {
+                            queue_recv(&recv_queue, Ok(None));
 
-                                queue_recv(&recv_queue, Ok(Some(Right(signal))));
-                            }
-                            Err(_) => todo!(),
+                            // TODO: wake up the indicate waiter... actually maybe
+                            // we just do that at the end of the loop
+                            break;
+                        }
+                        Err(err) => {
+                            queue_recv(&recv_queue, Err(err));
+
+                            // TODO: wake up the indicate waiter... actually maybe
+                            // we just do that at the end of the loop
+                            break;
                         }
                     }
-                    Ok(Some((data, false))) => {
-                        queue_recv(&recv_queue, Ok(Some(Left(data))));
-                    }
-                    Ok(None) => {
-                        queue_recv(&recv_queue, Ok(None));
-
-                        // TODO: wake up the indicate waiter... actually maybe
-                        // we just do that at the end of the loop
-                        break;
-                    }
-                    Err(err) => {
-                        queue_recv(&recv_queue, Err(err));
-
-                        // TODO: wake up the indicate waiter... actually maybe
-                        // we just do that at the end of the loop
-                        break;
-                    }
                 }
-            }
-        });
+            })
+            .expect("failed to spawn thread");
 
         X29Pad {
             svc,
@@ -155,16 +158,16 @@ impl X29Pad {
         self.svc
     }
 
-    pub fn send_clear_invitation(&self) -> io::Result<()> {
+    pub fn invite_clear(&self) -> io::Result<()> {
         send_message(&self.svc, X29PadMessage::ClearInvitation)
     }
 
     // TODO: these should return results - using X3ParamError...
-    pub fn read_remote_params(&self, request: &[u8]) -> Vec<(u8, u8)> {
+    pub fn read_remote_params(&self, _request: &[u8]) -> Vec<(u8, u8)> {
         todo!()
     }
 
-    pub fn set_read_remote_params(&self, request: &[(u8, u8)]) -> Vec<(u8, u8)> {
+    pub fn set_read_remote_params(&self, _request: &[(u8, u8)]) -> Vec<(u8, u8)> {
         todo!()
     }
 }

@@ -1,7 +1,7 @@
+use libxotpad::pad::PadParams;
 use libxotpad::x25::Svc;
+use libxotpad::x3::X3Params;
 
-use crate::x3::X3Params;
-
-pub fn run(/* pty: Pty */ _x3_params: &X3Params, _svc: Svc) {
+pub fn run<Q: X3Params>(/* pty: Pty */ _pad_params: &PadParams<Q>, _svc: Svc) {
     todo!();
 }

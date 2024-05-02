@@ -1,25 +1,23 @@
 use bytes::{BufMut, Bytes, BytesMut};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use either::Either::{self, Left, Right};
+use libxotpad::pad::{Pad, PadParams};
 use libxotpad::x121::X121Addr;
 use libxotpad::x25::packet::X25CallRequest;
 use libxotpad::x25::{Svc, Vc, X25Params};
-use libxotpad::x29::{X29Pad, X29PadSignal};
-use libxotpad::x3::X3Params as _;
+use libxotpad::x3::X3Params;
 use libxotpad::xot::{self, XotLink, XotResolver};
 use std::collections::HashMap;
-use std::io::{self, BufReader, Read, Stdout, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::ops::{Add, Sub};
 use std::str::{self, FromStr};
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tracing_mutex::stdsync::{Mutex, RwLock};
 
 use crate::x28::{X28Command, X28Signal};
-use crate::x3::X3Params;
+use crate::x3::UserPadParams;
 
 pub fn call(addr: &X121Addr, x25_params: &X25Params, resolver: &XotResolver) -> io::Result<Svc> {
     let xot_link = xot::connect(addr, resolver)?;
@@ -37,14 +35,13 @@ enum PadLocalState {
 
 enum PadInput {
     Call(X25CallRequest),
-    Local(io::Result<Option<(u8, Instant)>>),
-    Remote(io::Result<Option<Either<Bytes, X29PadSignal>>>),
-    TimeOut,
+    Local(io::Result<Option<u8>>),
+    Remote(io::Result<Option<Bytes>>),
 }
 
 pub fn run(
     x25_params: &X25Params,
-    x3_profiles: &HashMap<&str, X3Params>,
+    x3_profiles: &HashMap<&str, PadParams<UserPadParams>>,
     resolver: &XotResolver,
     x3_profile: &str,
     tcp_listener: Option<TcpListener>,
@@ -56,7 +53,7 @@ pub fn run(
 
     // Start the local input thread.
     thread::Builder::new()
-        .name("user_input".to_string())
+        .name("user_pad_local".to_string())
         .spawn({
             let tx = tx.clone();
 
@@ -66,7 +63,7 @@ pub fn run(
                 for byte in reader.bytes() {
                     let should_continue = byte.is_ok();
 
-                    let input = byte.map(|b| Some((b, Instant::now())));
+                    let input = byte.map(Some);
 
                     if tx.send(PadInput::Local(input)).is_err() {
                         break;
@@ -92,14 +89,14 @@ pub fn run(
             .clone(),
     ));
 
-    let current_call = Arc::new(Mutex::new(Option::<(X29Pad, X25Params)>::None));
+    let current_call = Arc::new(Mutex::new(Option::<(Pad<UserPadParams>, X25Params)>::None));
 
     if let Some(svc) = svc {
         let x25_params = svc.params();
 
-        let x29_pad = X29Pad::new(svc, Arc::clone(&x3_params));
+        let pad = Pad::new(svc, Arc::clone(&x3_params), true);
 
-        current_call.lock().unwrap().replace((x29_pad, x25_params));
+        current_call.lock().unwrap().replace((pad, x25_params));
 
         local_state = PadLocalState::Data;
         is_one_shot = true;
@@ -107,9 +104,9 @@ pub fn run(
         {
             let current_call = current_call.lock().unwrap();
 
-            let (x29_pad, _) = current_call.as_ref().unwrap();
+            let (pad, _) = current_call.as_ref().unwrap();
 
-            spawn_remote_thread(x29_pad, tx.clone());
+            spawn_remote_thread(pad, tx.clone());
         }
     }
 
@@ -120,7 +117,7 @@ pub fn run(
         let tx = tx.clone();
 
         thread::Builder::new()
-            .name("user_pad_1".to_string())
+            .name("user_pad_listener".to_string())
             .spawn(move || {
                 for tcp_stream in tcp_listener.incoming() {
                     if tcp_stream.is_err() {
@@ -158,9 +155,9 @@ pub fn run(
                     // TODO: should we "reset" the X.3 parameters here, for a new
                     // call?
 
-                    let x29_pad = X29Pad::new(svc, Arc::clone(&x3_params));
+                    let pad = Pad::new(svc, Arc::clone(&x3_params), true);
 
-                    current_call.replace((x29_pad, x25_params));
+                    current_call.replace((pad, x25_params));
 
                     if tx.send(PadInput::Call(call_request)).is_err() {
                         break;
@@ -171,8 +168,7 @@ pub fn run(
     }
 
     let mut command_buf = BytesMut::with_capacity(128);
-    let mut data_buf = BytesMut::with_capacity(128);
-    let mut last_data_time = None;
+    let mut line_buf = BytesMut::with_capacity(128);
 
     if local_state == PadLocalState::Command {
         print_prompt();
@@ -180,10 +176,8 @@ pub fn run(
         io::stdout().flush()?;
     }
 
-    let mut timeout = None;
-
     loop {
-        let Some(input) = recv_input(&rx, timeout) else {
+        let Ok(input) = rx.recv() else {
             break;
         };
 
@@ -195,39 +189,23 @@ pub fn run(
 
                 local_state = PadLocalState::Data;
 
-                let (x29_pad, _) = current_call.as_ref().unwrap();
+                let (pad, _) = current_call.as_ref().unwrap();
 
-                spawn_remote_thread(x29_pad, tx.clone());
+                spawn_remote_thread(pad, tx.clone());
             }
-            PadInput::Remote(Ok(Some(Left(buf)))) => {
-                write_recv_data(io::stdout(), &buf, &x3_params.read().unwrap())?;
-            }
-            PadInput::Remote(Ok(Some(Right(X29PadSignal::ClearInvitation)))) => {
-                let (x29_pad, _) = current_call.take().unwrap();
-
-                x29_pad.flush()?;
-
-                x29_pad.into_svc().clear(0, 0)?;
-
-                if is_one_shot {
-                    break;
-                }
-
-                print_signal(X28Signal::Cleared(None), true);
-
-                ensure_command(&mut local_state, false);
+            PadInput::Remote(Ok(Some(buf))) => {
+                io::stdout().write_all(&buf)?;
             }
             PadInput::Remote(Ok(None)) => {
-                // If there is a current call then the clear was initiated by the other
-                // party and we should display the cleared signal, otherwise initiated
-                // the clear request and do not need to display a signal.
+                // If there is a current call then the clear was requested by the remote party,
+                // although it may have been as a result of an invite clear X.29 PAD message from
+                // us.
                 let signal = if current_call.is_some() {
-                    let (x29_pad, _) = current_call.take().unwrap();
+                    let (pad, _) = current_call.take().unwrap();
 
-                    let (cause_code, diagnostic_code) =
-                        x29_pad.into_svc().cleared().unwrap_or((0, 0));
+                    let cleared = pad.into_svc().cleared();
 
-                    Some(X28Signal::Cleared(Some((cause_code, diagnostic_code))))
+                    Some(X28Signal::Cleared(cleared))
                 } else {
                     None
                 };
@@ -258,12 +236,12 @@ pub fn run(
                 ensure_command(&mut local_state, true);
             }
             PadInput::Local(Ok(None) | Err(_)) => {
-                if let Some((x29_pad, _)) = current_call.take() {
-                    x29_pad.flush()?;
-                    x29_pad.into_svc().clear(0, 0)?; // TODO
+                if let Some((mut pad, _)) = current_call.take() {
+                    pad.flush()?;
+                    pad.into_svc().clear(0, 0)?; // TODO
                 }
             }
-            PadInput::Local(Ok(Some((byte, input_time)))) => match (local_state, byte) {
+            PadInput::Local(Ok(Some(byte))) => match (local_state, byte) {
                 (PadLocalState::Command, /* CR */ 0x0d) => {
                     print!("\r\n");
 
@@ -291,25 +269,25 @@ pub fn run(
                                         Ok(svc) => {
                                             let x25_params = svc.params();
 
-                                            let x29_pad = X29Pad::new(svc, Arc::clone(&x3_params));
+                                            let pad = Pad::new(svc, Arc::clone(&x3_params), true);
 
-                                            current_call.replace((x29_pad, x25_params));
+                                            current_call.replace((pad, x25_params));
 
                                             print_signal(X28Signal::Connected(None), false);
 
                                             local_state = PadLocalState::Data;
 
-                                            let (x29_pad, _) = current_call.as_ref().unwrap();
+                                            let (pad, _) = current_call.as_ref().unwrap();
 
-                                            spawn_remote_thread(x29_pad, tx.clone());
+                                            spawn_remote_thread(pad, tx.clone());
                                         }
                                         Err(xxx) => print!("SOMETHING WENT WRONG: {xxx}\r\n"),
                                     }
                                 }
                             }
                             Ok(X28Command::Clear) => {
-                                if let Some((x29_pad, _)) = current_call.take() {
-                                    x29_pad.into_svc().clear(0, 0)?;
+                                if let Some((pad, _)) = current_call.take() {
+                                    pad.into_svc().clear(0, 0)?;
 
                                     print_signal(X28Signal::Cleared(None), false);
                                 } else {
@@ -342,17 +320,20 @@ pub fn run(
                                 print_signal(X28Signal::LocalParams(response), false);
                             }
                             Ok(X28Command::Status) => {
-                                if current_call.is_some() {
-                                    print_signal(X28Signal::Engaged, false);
+                                let signal = if current_call.is_some() {
+                                    X28Signal::Engaged
                                 } else {
-                                    print_signal(X28Signal::Free, false);
-                                }
+                                    X28Signal::Free
+                                };
+
+                                print_signal(signal, false);
                             }
                             Ok(X28Command::InviteClear) => {
-                                if let Some((x29_pad, _)) = current_call.as_ref() {
-                                    x29_pad.invite_clear()?;
+                                if let Some((pad, _)) = current_call.as_ref() {
+                                    pad.invite_clear()?;
 
-                                    // TODO: we need to add a timeout...
+                                    // TODO: Implement timeout, if clear request not received from
+                                    // remote PAD send a clear request.
                                 } else {
                                     print_signal(X28Signal::Error, false); // Not connected
                                 }
@@ -371,8 +352,8 @@ pub fn run(
                 }
                 (PadLocalState::Command, /* Ctrl+C */ 0x03) => {
                     if command_buf.is_empty() {
-                        if let Some((x29_pad, _)) = current_call.take() {
-                            x29_pad.into_svc().clear(0, 0)?;
+                        if let Some((pad, _)) = current_call.take() {
+                            pad.into_svc().clear(0, 0)?;
                         }
 
                         break;
@@ -385,17 +366,9 @@ pub fn run(
                 }
                 (PadLocalState::Command, /* Ctrl+P */ 0x10) => {
                     if command_buf.is_empty() && current_call.is_some() {
-                        let (x29_pad, x25_params) = current_call.as_ref().unwrap();
+                        let (pad, _) = current_call.as_mut().unwrap();
 
-                        last_data_time = Some(input_time);
-
-                        queue_and_send_data_if_ready(
-                            x29_pad,
-                            x25_params,
-                            &x3_params.read().unwrap(),
-                            &mut data_buf,
-                            0x10,
-                        )?;
+                        pad.write_all(&[byte])?;
 
                         print!("\r\n");
                         local_state = PadLocalState::Data;
@@ -410,77 +383,49 @@ pub fn run(
                     ensure_command(&mut local_state, true);
                 }
                 (PadLocalState::Data, byte) => 'input: {
-                    let x3_params = x3_params.read().unwrap();
+                    let (pad, _) = current_call.as_mut().unwrap();
 
-                    let editing: bool = x3_params.editing.into();
+                    let pad_params = x3_params.read().unwrap();
+                    let params = pad_params.delegate.as_ref().unwrap();
+
+                    let editing: bool = pad_params.editing.into();
 
                     if editing {
-                        if x3_params.char_delete.is_match(byte) {
-                            handle_char_delete(&mut data_buf)?;
+                        if params.char_delete.is_match(byte) {
+                            handle_char_delete(&mut line_buf)?;
                             break 'input;
-                        } else if x3_params.line_delete.is_match(byte) {
-                            handle_line_delete(&mut data_buf)?;
+                        } else if params.line_delete.is_match(byte) {
+                            handle_line_delete(&mut line_buf)?;
                             break 'input;
-                        } else if x3_params.line_display.is_match(byte) {
-                            handle_line_display(&data_buf)?;
+                        } else if params.line_display.is_match(byte) {
+                            handle_line_display(&line_buf)?;
                             break 'input;
                         }
-                    }
 
-                    if x3_params.echo.into() {
-                        io::stdout().write_all(&[byte])?;
+                        line_buf.put_u8(byte);
 
-                        // TODO: it is not obvious if this also depends on ECHO (param 2)...
-                        // i.e should this be inside this IF block?
-                        if x3_params.lf_insert.after_echo(byte) {
-                            io::stdout().write_all(&[/* LF */ 0x0a])?;
+                        if pad_params.echo.into() {
+                            io::stdout().write_all(&[byte])?;
+
+                            if pad_params.lf_insert.after_echo(byte) {
+                                io::stdout().write_all(&[/* LF */ 0x0a])?;
+                            }
                         }
+
+                        // Need to drop read lock on PAD parameters for lock ordering on write.
+                        drop(pad_params);
+
+                        if byte == /* CR */ 0x0d {
+                            pad.write_all(&line_buf.split())?;
+                        }
+                    } else {
+                        // Need to drop read lock on PAD parameters for lock ordering on write.
+                        drop(pad_params);
+
+                        pad.write_all(&[byte])?;
                     }
-
-                    let (x29_pad, x25_params) = current_call.as_ref().unwrap();
-
-                    last_data_time = Some(input_time);
-
-                    queue_and_send_data_if_ready(
-                        x29_pad,
-                        x25_params,
-                        &x3_params,
-                        &mut data_buf,
-                        byte,
-                    )?;
                 }
             },
-            PadInput::TimeOut => {
-                // Idle input timeout will be handled below.
-            }
-        }
-
-        // Send data if the idle timeout has expired, otherwise set the input
-        // timeout.
-        timeout = None;
-
-        let x3_params = x3_params.read().unwrap();
-
-        if let Some(delay) = x3_params.idle.into() {
-            let editing: bool = x3_params.editing.into();
-
-            // The idle timeout does not apply when editing....
-            if !data_buf.is_empty() && !editing {
-                let now = Instant::now();
-                let deadline = last_data_time.unwrap().add(delay);
-
-                if now >= deadline {
-                    let (x29_pad, _) = current_call.as_ref().unwrap();
-
-                    send_data(x29_pad, &mut data_buf)?;
-                } else {
-                    timeout = Some(deadline.sub(now));
-                }
-            }
-        }
-
-        if data_buf.is_empty() {
-            last_data_time = None;
         }
 
         io::stdout().flush()?;
@@ -493,91 +438,38 @@ pub fn run(
     Ok(())
 }
 
-fn queue_and_send_data_if_ready(
-    x29_pad: &X29Pad,
-    x25_params: &X25Params,
-    x3_params: &X3Params,
-    buf: &mut BytesMut,
-    byte: u8,
-) -> io::Result<()> {
-    buf.put_u8(byte);
-
-    if x3_params.lf_insert.after_send(byte) {
-        buf.put_u8(/* LF */ 0x0a);
-    }
-
-    if !should_send_data(buf, byte, x25_params, x3_params) {
-        return Ok(());
-    }
-
-    send_data(x29_pad, buf)
-}
-
-fn should_send_data(
-    buf: &BytesMut,
-    last_byte: u8,
-    x25_params: &X25Params,
-    x3_params: &X3Params,
-) -> bool {
-    if buf.is_empty() {
-        return false;
-    }
-
-    let editing: bool = x3_params.editing.into();
-
-    // NOTE: >= because of the possible insertion of a LF, after CR
-    // this does not apply if editing... kinda makes sense I guess :)
-    if buf.len() >= x25_params.send_packet_size && !editing {
-        return true;
-    }
-
-    x3_params.forward.is_match(last_byte)
-}
-
-fn send_data(x29_pad: &X29Pad, buf: &mut BytesMut) -> io::Result<()> {
-    assert!(!buf.is_empty());
-
-    let user_data = buf.split();
-
-    x29_pad.send_data(user_data.into())
-}
-
-fn ensure_command(state: &mut PadLocalState, new_line: bool) {
-    if *state == PadLocalState::Command {
-        return;
-    }
-
-    if new_line {
-        print!("\r\n");
-    }
-
-    print_prompt();
-
-    *state = PadLocalState::Command;
-}
-
-fn spawn_remote_thread(x29_pad: &X29Pad, channel: Sender<PadInput>) -> JoinHandle<()> {
-    let x29_pad = x29_pad.clone();
+fn spawn_remote_thread(pad: &Pad<UserPadParams>, channel: Sender<PadInput>) -> JoinHandle<()> {
+    let mut pad = pad.clone();
 
     thread::Builder::new()
-        .name("user_pad_2".to_string())
-        .spawn(move || loop {
-            let result = x29_pad.recv();
+        .name("user_pad_remote".to_string())
+        .spawn(move || {
+            let mut buf = [0; 128];
 
-            let should_continue = matches!(result, Ok(Some(_)));
+            loop {
+                let (input, should_continue) = match pad.read(&mut buf[..]) {
+                    Ok(0) => (PadInput::Remote(Ok(None)), false),
+                    Ok(n) => {
+                        let buf = Bytes::copy_from_slice(&buf[..n]);
 
-            if channel.send(PadInput::Remote(result)).is_err() {
-                break;
-            }
+                        (PadInput::Remote(Ok(Some(buf))), true)
+                    }
+                    Err(err) => (PadInput::Remote(Err(err)), false),
+                };
 
-            if !should_continue {
-                break;
+                if channel.send(input).is_err() {
+                    break;
+                }
+
+                if !should_continue {
+                    break;
+                }
             }
         })
         .expect("failed to spawn thread")
 }
 
-fn read_params(params: &X3Params, request: &[u8]) -> Vec<(u8, Option<u8>)> {
+fn read_params<Q: X3Params>(params: &PadParams<Q>, request: &[u8]) -> Vec<(u8, Option<u8>)> {
     if request.is_empty() {
         return params.all().iter().map(|&(p, v)| (p, Some(v))).collect();
     }
@@ -585,7 +477,10 @@ fn read_params(params: &X3Params, request: &[u8]) -> Vec<(u8, Option<u8>)> {
     request.iter().map(|&p| (p, params.get(p))).collect()
 }
 
-fn set_params(params: &mut X3Params, request: &[(u8, u8)]) -> Vec<(u8, Option<u8>)> {
+fn set_params<Q: X3Params>(
+    params: &mut PadParams<Q>,
+    request: &[(u8, u8)],
+) -> Vec<(u8, Option<u8>)> {
     request
         .iter()
         .map(|&(p, v)| {
@@ -596,34 +491,6 @@ fn set_params(params: &mut X3Params, request: &[(u8, u8)]) -> Vec<(u8, Option<u8
             (p, params.get(p))
         })
         .collect()
-}
-
-fn recv_input(channel: &Receiver<PadInput>, timeout: Option<Duration>) -> Option<PadInput> {
-    if let Some(timeout) = timeout {
-        return match channel.recv_timeout(timeout) {
-            Ok(input) => Some(input),
-            Err(RecvTimeoutError::Timeout) => Some(PadInput::TimeOut),
-            Err(RecvTimeoutError::Disconnected) => None,
-        };
-    }
-
-    match channel.recv() {
-        Ok(input) => Some(input),
-        Err(_) => None,
-    }
-}
-
-fn write_recv_data(mut stdout: Stdout, buf: &[u8], params: &X3Params) -> io::Result<()> {
-    // TODO: this can be improved to avoid writing individual characters...
-    for &byte in buf {
-        stdout.write_all(&[byte])?;
-
-        if params.lf_insert.after_recv(byte) {
-            stdout.write_all(&[/* LF */ 0x0a])?;
-        }
-    }
-
-    Ok(())
 }
 
 fn handle_char_delete(buf: &mut BytesMut) -> io::Result<()> {
@@ -664,4 +531,18 @@ fn print_signal(signal: X28Signal, new_line: bool) {
     }
 
     print!("{signal}\r\n");
+}
+
+fn ensure_command(state: &mut PadLocalState, new_line: bool) {
+    if *state == PadLocalState::Command {
+        return;
+    }
+
+    if new_line {
+        print!("\r\n");
+    }
+
+    print_prompt();
+
+    *state = PadLocalState::Command;
 }

@@ -161,3 +161,14 @@ mod tests {
         );
     }
 }
+
+#[cfg(fuzzing)]
+pub mod fuzzing {
+    use bytes::Bytes;
+
+    use super::X29PadMessage;
+
+    pub fn pad_message_decode(buf: Bytes) -> Result<X29PadMessage, String> {
+        X29PadMessage::decode(buf)
+    }
+}

@@ -417,7 +417,6 @@ dependencies = [
  "bytes",
  "clap",
  "crossterm",
- "either",
  "libxotpad",
  "tracing-mutex",
 ]

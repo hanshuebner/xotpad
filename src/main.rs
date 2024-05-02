@@ -1,6 +1,8 @@
 use clap::Parser;
+use libxotpad::pad::PadParams;
 use libxotpad::x121::X121Addr;
 use libxotpad::x25::{X25Modulo, X25Params};
+use libxotpad::x3::{X3Echo, X3Editing, X3Forward, X3Idle, X3LfInsert};
 use libxotpad::xot::{self, XotResolver};
 use std::collections::HashMap;
 use std::io;
@@ -8,10 +10,7 @@ use std::net::TcpListener;
 use std::time::Duration;
 
 use xotpad::user_pad;
-use xotpad::x3::{
-    X3CharDelete, X3Echo, X3Editing, X3Forward, X3Idle, X3LfInsert, X3LineDelete, X3LineDisplay,
-    X3Params,
-};
+use xotpad::x3::{UserPadParams, X3CharDelete, X3LineDelete, X3LineDisplay};
 
 fn main() -> io::Result<()> {
     let args = Args::parse();
@@ -96,7 +95,7 @@ struct Args {
 
 struct Config<'a> {
     x25_params: X25Params,
-    x3_profiles: HashMap<&'a str, X3Params>,
+    x3_profiles: HashMap<&'a str, PadParams<UserPadParams>>,
     resolver: XotResolver,
     x3_profile: &'a str,
 }
@@ -124,15 +123,17 @@ fn load_config(args: &Args) -> Config {
 
     x3_profiles.insert(
         "default",
-        X3Params {
+        PadParams {
             echo: X3Echo::try_from(1).unwrap(),
             forward: X3Forward::try_from(126).unwrap(),
             idle: X3Idle::from(0),
             lf_insert: X3LfInsert::try_from(0).unwrap(),
             editing: X3Editing::try_from(0).unwrap(),
-            char_delete: X3CharDelete::try_from(127).unwrap(),
-            line_delete: X3LineDelete::try_from(/* Ctrl+X */ 24).unwrap(),
-            line_display: X3LineDisplay::try_from(/* Ctrl+R */ 18).unwrap(),
+            delegate: Some(UserPadParams {
+                char_delete: X3CharDelete::try_from(127).unwrap(),
+                line_delete: X3LineDelete::try_from(/* Ctrl+X */ 24).unwrap(),
+                line_display: X3LineDisplay::try_from(/* Ctrl+R */ 18).unwrap(),
+            }),
         },
     );
 

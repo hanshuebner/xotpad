@@ -12,6 +12,7 @@ pub enum X28Command {
     SetRead(Vec<(u8, u8)>),
     Status,
     InviteClear,
+    Help(String),
 }
 
 impl FromStr for X28Command {
@@ -60,6 +61,7 @@ impl FromStr for X28Command {
             }
             "STAT" | "STATUS" => Ok(X28Command::Status),
             "ICLR" | "ICLEAR" => Ok(X28Command::InviteClear),
+            "HELP" => Ok(X28Command::Help(rest.to_string())),
             _ => match X28Selection::from_str(&command) {
                 Ok(selection) => Ok(X28Command::Selection(selection)),
                 _ => Err("unrecognized command".into()),
@@ -235,5 +237,22 @@ mod tests {
     fn from_str_invite_clear() {
         assert_eq!(X28Command::from_str("iclr"), Ok(X28Command::InviteClear));
         assert_eq!(X28Command::from_str("iclear"), Ok(X28Command::InviteClear));
+    }
+
+    #[test]
+    fn from_str_help() {
+        assert_eq!(
+            X28Command::from_str("help"),
+            Ok(X28Command::Help("".to_string()))
+        );
+        assert_eq!(
+            X28Command::from_str("help subject"),
+            Ok(X28Command::Help("subject".to_string()))
+        );
+    }
+
+    #[test]
+    fn from_str_invalid() {
+        assert!(X28Command::from_str("invalid").is_err());
     }
 }

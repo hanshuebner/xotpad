@@ -1,4 +1,5 @@
 use bytes::{BufMut, Bytes, BytesMut};
+use chrono::{DateTime, Local};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use libxotpad::pad::{Pad, PadParams};
 use libxotpad::x25::packet::X25CallRequest;
@@ -385,9 +386,8 @@ pub fn run(
                                     print_signal(X28Signal::Error, false); // Not connected
                                 }
                             }
-                            Err(_) => {
-                                print_signal(X28Signal::Error, false);
-                            }
+                            Ok(X28Command::Help(subject)) => print_help(&subject),
+                            Err(_) => print_signal(X28Signal::Error, false),
                         }
                     }
 
@@ -623,4 +623,24 @@ fn trim_complete_escape_sequence(buf: &mut BytesMut) -> bool {
     }
 
     false
+}
+
+fn print_help(subject: &str) {
+    print!("\r\n");
+
+    let subject = subject.to_uppercase();
+
+    if subject.is_empty() || subject == "HELP" {
+        let now: DateTime<Local> = Local::now();
+
+        let year = now.format("%Y");
+
+        print!("xotpad - X.25 PAD for XOT\r\n");
+        print!("\r\n");
+        print!("For more information on X.25 networking in {year}, visit https://x25.org\r\n");
+    } else {
+        print!("No help for subject, try HELP for a description of the HELP command\r\n");
+    }
+
+    print!("\r\n");
 }

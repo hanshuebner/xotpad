@@ -1,6 +1,8 @@
 use libxotpad::x3::X3ParamError;
 use std::ops::Deref;
 
+use crate::util::is_char_delete;
+
 const PARAMS: [u8; 3] = [16, 17, 18];
 
 #[derive(Clone, Debug)]
@@ -68,6 +70,10 @@ impl TryFrom<u8> for X3CharDelete {
 
 impl X3CharDelete {
     pub fn is_match(&self, byte: u8) -> bool {
+        if self.0 == 127 {
+            return is_char_delete(byte);
+        }
+
         byte == self.0
     }
 }

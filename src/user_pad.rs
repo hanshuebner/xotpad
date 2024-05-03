@@ -16,6 +16,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tracing_mutex::stdsync::{Mutex, RwLock};
 
+use crate::util::is_char_delete;
 use crate::x28::{X28Command, X28Signal};
 use crate::x3::UserPadParams;
 
@@ -176,7 +177,7 @@ pub fn run(
         io::stdout().flush()?;
     }
 
-    loop {
+    'main: loop {
         let Ok(input) = rx.recv() else {
             break;
         };
@@ -198,8 +199,7 @@ pub fn run(
             }
             PadInput::Remote(Ok(None)) => {
                 // If there is a current call then the clear was requested by the remote party,
-                // although it may have been as a result of an invite clear X.29 PAD message from
-                // us.
+                // it may have been as a result of an invite clear X.29 PAD message from us.
                 let signal = if current_call.is_some() {
                     let (pad, _) = current_call.take().unwrap();
 
@@ -242,12 +242,36 @@ pub fn run(
                 }
             }
             PadInput::Local(Ok(Some(byte))) => match (local_state, byte) {
-                (PadLocalState::Command, /* CR */ 0x0d) => {
+                (PadLocalState::Command, /* Ctrl+C */ 0x03) => {
+                    if command_buf.is_empty() {
+                        if let Some((pad, _)) = current_call.take() {
+                            pad.into_svc().clear(0, 0)?;
+                        }
+
+                        break;
+                    }
+
+                    command_buf.clear();
+
                     print!("\r\n");
+                    print_prompt();
+                }
+                (PadLocalState::Command, /* Ctrl+P */ 0x10) => {
+                    if command_buf.is_empty() && current_call.is_some() {
+                        let (pad, _) = current_call.as_mut().unwrap();
 
-                    let buf = command_buf.split();
+                        pad.write_all(&[byte])?;
 
-                    let line = str::from_utf8(&buf[..]).unwrap().trim();
+                        print!("\r\n");
+                        local_state = PadLocalState::Data;
+                    }
+                }
+                (PadLocalState::Command, byte) => 'input: {
+                    let Some(line) = handle_command_input(&mut command_buf, byte)? else {
+                        break 'input;
+                    };
+
+                    let line = line.trim();
 
                     if !line.is_empty() {
                         if line.to_uppercase() == "EXIT" {
@@ -255,7 +279,7 @@ pub fn run(
                                 x29_pad.into_svc().clear(0, 0)?;
                             }
 
-                            break;
+                            break 'main;
                         }
 
                         let command = X28Command::from_str(line);
@@ -295,7 +319,7 @@ pub fn run(
                                 }
 
                                 if is_one_shot {
-                                    break;
+                                    break 'main;
                                 }
                             }
                             Ok(X28Command::Read(ref request)) => {
@@ -349,35 +373,6 @@ pub fn run(
                     } else {
                         print_prompt();
                     }
-                }
-                (PadLocalState::Command, /* Ctrl+C */ 0x03) => {
-                    if command_buf.is_empty() {
-                        if let Some((pad, _)) = current_call.take() {
-                            pad.into_svc().clear(0, 0)?;
-                        }
-
-                        break;
-                    }
-
-                    command_buf.clear();
-
-                    print!("\r\n");
-                    print_prompt();
-                }
-                (PadLocalState::Command, /* Ctrl+P */ 0x10) => {
-                    if command_buf.is_empty() && current_call.is_some() {
-                        let (pad, _) = current_call.as_mut().unwrap();
-
-                        pad.write_all(&[byte])?;
-
-                        print!("\r\n");
-                        local_state = PadLocalState::Data;
-                    }
-                }
-                (PadLocalState::Command, byte) => {
-                    command_buf.put_u8(byte);
-
-                    io::stdout().write_all(&[byte])?;
                 }
                 (PadLocalState::Data, /* Ctrl+P */ 0x10) => {
                     ensure_command(&mut local_state, true);
@@ -500,7 +495,6 @@ fn handle_char_delete(buf: &mut BytesMut) -> io::Result<()> {
 
     buf.truncate(buf.len() - 1);
 
-    // TODO: Now do some terminal thing...
     io::stdout().write_all(&[0x08, 0x20, 0x08])
 }
 
@@ -509,10 +503,11 @@ fn handle_line_delete(buf: &mut BytesMut) -> io::Result<()> {
         return Ok(());
     }
 
-    // TODO: it's not clear if this should clear the whole buffer, or just a "LINE"... I think
-    // the Cisco X.28 command will just show XXX and then, er, it doesn't really work tho...
     buf.clear();
 
+    // This is the indication the line delete function has completed for printing terminals. Video
+    // terminals should use a rpetition of the BS SP BS sequence to clear the line but it appears
+    // the Cisco x28 command just displays the printing terminal indication.
     io::stdout().write_all(b"XXX\r\n")
 }
 
@@ -545,4 +540,64 @@ fn ensure_command(state: &mut PadLocalState, new_line: bool) {
     print_prompt();
 
     *state = PadLocalState::Command;
+}
+
+fn handle_command_input(buf: &mut BytesMut, byte: u8) -> io::Result<Option<String>> {
+    if byte == /* CR */ 0x0d {
+        print!("\r\n");
+
+        let buf = buf.split();
+
+        let line = str::from_utf8(&buf[..]).unwrap();
+
+        return Ok(Some(line.to_string()));
+    }
+
+    if is_char_delete(byte) {
+        handle_char_delete(buf)?;
+
+        return Ok(None);
+    }
+
+    // Ignore any other control characters, with the exception of escape which we need to
+    // store in order to detect and remove escape sequences.
+    if byte.is_ascii_control() && byte != /* ESC */ 0x1b {
+        return Ok(None);
+    }
+
+    buf.put_u8(byte);
+
+    if trim_complete_escape_sequence(buf) {
+        return Ok(None);
+    }
+
+    if !in_escape_sequence(buf) {
+        io::stdout().write_all(&[byte])?;
+    }
+
+    Ok(None)
+}
+
+fn in_escape_sequence(buf: &BytesMut) -> bool {
+    buf.iter().rev().any(|&b| b == /* ESC */ 0x1b)
+}
+
+fn trim_complete_escape_sequence(buf: &mut BytesMut) -> bool {
+    let mut sequence_len = 0;
+
+    if buf.len() >= 3 {
+        if buf[buf.len() - 3] == 0x1b && buf[buf.len() - 2] != b'O' {
+            sequence_len = 3;
+        }
+    } else if buf.len() >= 4 && buf[buf.len() - 4] == 0x1b {
+        sequence_len = 4;
+    }
+
+    if sequence_len > 0 {
+        buf.truncate(buf.len() - sequence_len);
+
+        return true;
+    }
+
+    false
 }

@@ -1,7 +1,6 @@
 use bytes::{BufMut, Bytes, BytesMut};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use libxotpad::pad::{Pad, PadParams};
-use libxotpad::x121::X121Addr;
 use libxotpad::x25::packet::X25CallRequest;
 use libxotpad::x25::{Svc, Vc, X25Params};
 use libxotpad::x3::X3Params;
@@ -17,10 +16,34 @@ use std::time::Duration;
 use tracing_mutex::stdsync::{Mutex, RwLock};
 
 use crate::util::is_char_delete;
-use crate::x28::{X28Command, X28Signal};
+use crate::x28::{X28Addr, X28Command, X28Selection, X28Signal};
 use crate::x3::UserPadParams;
 
-pub fn call(addr: &X121Addr, x25_params: &X25Params, resolver: &XotResolver) -> io::Result<Svc> {
+pub fn call(
+    selection: &X28Selection,
+    x25_params: &X25Params,
+    resolver: &XotResolver,
+) -> io::Result<Svc> {
+    assert!(!selection.addrs.is_empty());
+
+    if selection.addrs.len() > 1 {
+        todo!("multiple addresses");
+    }
+
+    let addr = &selection.addrs[0];
+
+    let X28Addr::Full(addr) = addr else {
+        todo!("abbreviated addresses");
+    };
+
+    if !selection.facilities.is_empty() {
+        todo!("facilities");
+    }
+
+    if !selection.call_user_data.is_empty() {
+        todo!("call user data");
+    }
+
     let xot_link = xot::connect(addr, resolver)?;
 
     let call_user_data = Bytes::from_static(b"\x01\x00\x00\x00");
@@ -285,11 +308,11 @@ pub fn run(
                         let command = X28Command::from_str(line);
 
                         match command {
-                            Ok(X28Command::Selection(ref addr)) => {
+                            Ok(X28Command::Selection(ref selection)) => {
                                 if current_call.is_some() {
                                     print_signal(X28Signal::Error, false); // Connected
                                 } else {
-                                    match call(addr, x25_params, resolver) {
+                                    match call(selection, x25_params, resolver) {
                                         Ok(svc) => {
                                             let x25_params = svc.params();
 

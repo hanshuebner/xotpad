@@ -1,10 +1,11 @@
-use libxotpad::x121::X121Addr;
 use std::str::FromStr;
+
+use crate::x28::selection::X28Selection;
 
 /// X.28 command _signal_.
 #[derive(PartialEq, Debug)]
 pub enum X28Command {
-    Selection(X121Addr),
+    Selection(X28Selection),
     Clear,
     Read(Vec<u8>),
     Set(Vec<(u8, u8)>),
@@ -25,12 +26,12 @@ impl FromStr for X28Command {
         match &command[..] {
             "CALL" => {
                 if rest.is_empty() {
-                    return Err("address argument required".into());
+                    return Err("selection argument required".into());
                 }
 
-                match X121Addr::from_str(rest) {
-                    Ok(addr) => Ok(X28Command::Selection(addr)),
-                    Err(_) => Err("invalid address".into()),
+                match X28Selection::from_str(rest) {
+                    Ok(selection) => Ok(X28Command::Selection(selection)),
+                    Err(_) => Err("invalid selection".into()),
                 }
             }
             "CLR" | "CLEAR" => Ok(X28Command::Clear),
@@ -59,7 +60,10 @@ impl FromStr for X28Command {
             }
             "STAT" | "STATUS" => Ok(X28Command::Status),
             "ICLR" | "ICLEAR" => Ok(X28Command::InviteClear),
-            _ => Err("unrecognized command".into()),
+            _ => match X28Selection::from_str(&command) {
+                Ok(selection) => Ok(X28Command::Selection(selection)),
+                _ => Err("unrecognized command".into()),
+            },
         }
     }
 }
@@ -106,18 +110,38 @@ fn parse_set_params(s: &str) -> Result<Vec<(u8, u8)>, String> {
 
 #[cfg(test)]
 mod tests {
+    use libxotpad::x121::X121Addr;
+
+    use crate::x28::X28Addr;
+
     use super::*;
 
     #[test]
-    fn from_str_selection_valid() {
+    fn from_str_selection() {
+        let Ok(X28Command::Selection(selection)) = X28Command::from_str("12345") else {
+            panic!();
+        };
+
         assert_eq!(
-            X28Command::from_str("call 12345"),
-            Ok(X28Command::Selection(X121Addr::from_str("12345").unwrap()))
+            selection.addrs,
+            &[X28Addr::Full(X121Addr::from_str("12345").unwrap())]
         );
     }
 
     #[test]
-    fn from_str_selection_invalid() {
+    fn from_str_call_selection() {
+        let Ok(X28Command::Selection(selection)) = X28Command::from_str("call 12345") else {
+            panic!();
+        };
+
+        assert_eq!(
+            selection.addrs,
+            &[X28Addr::Full(X121Addr::from_str("12345").unwrap())]
+        );
+    }
+
+    #[test]
+    fn from_str_call_selection_invalid() {
         assert!(X28Command::from_str("call").is_err());
     }
 

@@ -10,6 +10,7 @@ use std::net::TcpListener;
 use std::time::Duration;
 
 use xotpad::user_pad;
+use xotpad::x28::X28Selection;
 use xotpad::x3::{UserPadParams, X3CharDelete, X3LineDelete, X3LineDisplay};
 
 fn main() -> io::Result<()> {
@@ -32,8 +33,8 @@ fn main() -> io::Result<()> {
         None
     };
 
-    let svc = if let Some(addr) = &args.call_addr {
-        match user_pad::call(addr, &config.x25_params, &config.resolver) {
+    let svc = if let Some(selection) = &args.selection {
+        match user_pad::call(selection, &config.x25_params, &config.resolver) {
             Ok(svc) => Some(svc),
             Err(err) => {
                 return Err(io::Error::new(io::ErrorKind::Other, err));
@@ -88,9 +89,9 @@ struct Args {
     #[arg(short = 'l', long = "listen")]
     should_listen: bool,
 
-    /// X.121 address to call.
-    #[arg(value_name = "ADDRESS", conflicts_with = "should_listen")]
-    call_addr: Option<X121Addr>,
+    /// X.28 selection.
+    #[arg(value_name = "SELECTION", conflicts_with = "should_listen")]
+    selection: Option<X28Selection>,
 }
 
 struct Config<'a> {

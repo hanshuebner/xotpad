@@ -635,7 +635,7 @@ fn print_help(subject: &str) {
 
         let year = now.format("%Y");
 
-        print!("xotpad - X.25 PAD for XOT\r\n");
+        print!("xotpad - {}\r\n", crate::ABOUT);
         print!("\r\n");
         print!("For more information on X.25 networking in {year}, visit https://x25.org\r\n");
     } else {

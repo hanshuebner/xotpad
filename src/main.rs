@@ -57,9 +57,8 @@ fn main() -> io::Result<()> {
 // -c, --config <FILE>          config file
 // -P, --x25-profile <PROFILE>  X.25 profile
 // -s, --serve                  SERVE!
-
-/// X.25 PAD for XOT.
 #[derive(Parser, Debug)]
+#[command(about = xotpad::ABOUT)]
 struct Args {
     /// Local X.121 address.
     #[arg(short = 'a', long = "address", value_name = "ADDRESS")]

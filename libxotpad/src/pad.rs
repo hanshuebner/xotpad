@@ -10,9 +10,11 @@ use std::time::Duration;
 use std::time::Instant;
 use tracing_mutex::stdsync::{Condvar, Mutex, RwLock};
 
-use crate::x25::{Svc, Vc};
-use crate::x29::X29PadMessage;
+use crate::x121::X121Addr;
+use crate::x25::{Svc, Vc, X25Params};
+use crate::x29::{X29CallUserData, X29PadMessage};
 use crate::x3::{X3Echo, X3Editing, X3Forward, X3Idle, X3LfInsert, X3ParamError, X3Params};
+use crate::xot::XotLink;
 
 type SendQueue = (VecDeque<u8>, Option<Instant>);
 type IndicateChannelMessage = Vec<(u8, u8)>;
@@ -187,6 +189,27 @@ impl<Q: X3Params + Send + Sync + 'static> Pad<Q> {
             recv_end,
             indicate_channel,
         }
+    }
+
+    pub fn call(
+        link: XotLink,
+        channel: u16,
+        addr: &X121Addr,
+        call_data: &[u8],
+        x25_params: &X25Params,
+        pad_params: Arc<RwLock<PadParams<Q>>>,
+        should_suppress_echo_when_editing: bool,
+    ) -> io::Result<Self> {
+        let call_user_data =
+            X29CallUserData::with_call_data(call_data).map_err(io::Error::other)?;
+
+        let mut call_user_data_buf = BytesMut::with_capacity(4 + call_data.len());
+
+        call_user_data.encode(&mut call_user_data_buf);
+
+        let svc = Svc::call(link, channel, addr, &call_user_data_buf, x25_params)?;
+
+        Ok(Pad::new(svc, pad_params, should_suppress_echo_when_editing))
     }
 
     pub fn get_remote_params(&self, _request: &[u8]) -> Vec<(u8, u8)> {

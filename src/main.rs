@@ -33,24 +33,13 @@ fn main() -> io::Result<()> {
         None
     };
 
-    let svc = if let Some(selection) = &args.selection {
-        match user_pad::call(selection, &config.x25_params, &config.resolver) {
-            Ok(svc) => Some(svc),
-            Err(err) => {
-                return Err(io::Error::new(io::ErrorKind::Other, err));
-            }
-        }
-    } else {
-        None
-    };
-
     user_pad::run(
         &config.x25_params,
         &config.x3_profiles,
         &config.resolver,
         config.x3_profile,
         listener,
-        svc,
+        &args.selection,
     )
 }
 

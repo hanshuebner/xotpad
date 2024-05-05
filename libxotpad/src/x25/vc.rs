@@ -83,7 +83,7 @@ impl Svc {
         link: XotLink,
         channel: u16,
         addr: &X121Addr,
-        call_user_data: &Bytes,
+        call_user_data: &[u8],
         params: &X25Params,
     ) -> io::Result<Self> {
         let svc = Svc::new(link, channel, params);
@@ -104,7 +104,7 @@ impl Svc {
                 if let Err(err) = inner.send_packet(&call_request.into()) {
                     inner.out_of_order(&mut state, err);
                     inner.engine_wait.notify_all();
-                    return Err(to_other_io_error("link is out of order"));
+                    return Err(io::Error::other("link is out of order"));
                 }
 
                 let next_state = VcState::WaitCallAccept(Instant::now());
@@ -141,7 +141,7 @@ impl Svc {
                     | VcState::Cleared(ClearInitiator::TimeOut(_), _) => {
                         return Err(io::Error::from(io::ErrorKind::TimedOut));
                     }
-                    VcState::OutOfOrder => return Err(to_other_io_error("link is out of order")),
+                    VcState::OutOfOrder => return Err(io::Error::other("link is out of order")),
                     _ => panic!("unexpected state"),
                 }
             }
@@ -192,7 +192,7 @@ impl Svc {
 
             match *state {
                 VcState::Called(ref call_request) => call_request.clone(),
-                VcState::OutOfOrder => return Err(to_other_io_error("link is out of order")),
+                VcState::OutOfOrder => return Err(io::Error::other("link is out of order")),
                 _ => panic!("unexpected state"),
             }
         };
@@ -232,7 +232,7 @@ impl Svc {
 
             match *state {
                 VcState::Cleared(ClearInitiator::Local, _) => { /* This is the expected state */ }
-                VcState::OutOfOrder => return Err(to_other_io_error("link is out of order")),
+                VcState::OutOfOrder => return Err(io::Error::other("link is out of order")),
                 _ => panic!("unexpected state"),
             }
         }
@@ -309,7 +309,7 @@ impl SvcIncomingCall {
             let mut state = inner.state.0.lock().unwrap();
 
             if !matches!(*state, VcState::Called(_)) {
-                return Err(to_other_io_error(
+                return Err(io::Error::other(
                     "other party probably gave up, or link is now out of order",
                 ));
             }
@@ -320,7 +320,7 @@ impl SvcIncomingCall {
                 inner.out_of_order(&mut state, err);
                 inner.engine_wait.notify_all();
 
-                return Err(to_other_io_error("link is out of order"));
+                return Err(io::Error::other("link is out of order"));
             }
 
             inner.data_transfer(&mut state);
@@ -336,7 +336,7 @@ impl SvcIncomingCall {
         let mut state = inner.state.0.lock().unwrap();
 
         if !matches!(*state, VcState::Called(_)) {
-            return Err(to_other_io_error(
+            return Err(io::Error::other(
                 "other party probably gave up, or link is now out of order",
             ));
         }
@@ -356,7 +356,7 @@ impl SvcIncomingCall {
             inner.out_of_order(&mut state, err);
             inner.engine_wait.notify_all();
 
-            return Err(to_other_io_error("link is out of order"));
+            return Err(io::Error::other("link is out of order"));
         }
 
         inner.cleared(&mut state, ClearInitiator::Local, None);
@@ -429,7 +429,7 @@ impl Vc for Svc {
                     VcState::Cleared(ClearInitiator::TimeOut(_), _) => {
                         return Err(io::Error::from(io::ErrorKind::TimedOut));
                     }
-                    VcState::OutOfOrder => return Err(to_other_io_error("link is out of order")),
+                    VcState::OutOfOrder => return Err(io::Error::other("link is out of order")),
                     _ => panic!("unexpected state"),
                 }
             }
@@ -471,7 +471,7 @@ impl Vc for Svc {
             | VcState::Cleared(ClearInitiator::TimeOut(_), _) => {
                 return Err(io::Error::from(io::ErrorKind::TimedOut))
             }
-            VcState::OutOfOrder => return Err(to_other_io_error("link is out of order")),
+            VcState::OutOfOrder => return Err(io::Error::other("link is out of order")),
             _ => panic!("unexpected state"),
         };
 
@@ -500,7 +500,7 @@ impl Vc for Svc {
                     VcState::Cleared(ClearInitiator::TimeOut(_), _) => {
                         return Err(io::Error::from(io::ErrorKind::TimedOut));
                     }
-                    VcState::OutOfOrder => return Err(to_other_io_error("link is out of order")),
+                    VcState::OutOfOrder => return Err(io::Error::other("link is out of order")),
                     _ => panic!("unexpected state"),
                 }
             }
@@ -1031,7 +1031,7 @@ impl VcInner {
     fn send_packet(&self, packet: &X25Packet) -> io::Result<()> {
         let mut buf = BytesMut::new();
 
-        packet.encode(&mut buf).map_err(|e| to_other_io_error(&e))?;
+        packet.encode(&mut buf).map_err(io::Error::other)?;
 
         self.send_link.lock().unwrap().send(&buf)
     }
@@ -1040,7 +1040,7 @@ impl VcInner {
 fn create_call_request(
     channel: u16,
     addr: &X121Addr,
-    call_user_data: &Bytes,
+    call_user_data: &[u8],
     params: &X25Params,
 ) -> X25CallRequest {
     let facilities = vec![
@@ -1060,7 +1060,7 @@ fn create_call_request(
         called_addr: addr.clone(),
         calling_addr: params.addr.clone(),
         facilities,
-        call_user_data: call_user_data.clone(),
+        call_user_data: Bytes::copy_from_slice(call_user_data),
     }
 }
 
@@ -1192,12 +1192,6 @@ fn pop_complete_data(queue: &mut VecDeque<X25Data>) -> Option<(Bytes, bool)> {
     }
 
     Some((user_data.freeze(), qualifier))
-}
-
-fn to_other_io_error(e: &str) -> io::Error {
-    let msg: String = e.into();
-    //io::Error::other(e)
-    io::Error::new(io::ErrorKind::Other, msg)
 }
 
 fn split_xot_link(link: XotLink) -> (XotLink, XotLink) {

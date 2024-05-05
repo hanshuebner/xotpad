@@ -1,5 +1,56 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
+#[derive(Debug)]
+pub struct X29CallUserData {
+    protocol: [u8; 4],
+    call_data: Vec<u8>,
+}
+
+impl X29CallUserData {
+    const PAD_PROTOCOL: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
+
+    pub fn with_call_data(call_data: &[u8]) -> Result<Self, String> {
+        if call_data.len() > 12 {
+            return Err("call data too long".to_string());
+        }
+
+        Ok(X29CallUserData {
+            protocol: X29CallUserData::PAD_PROTOCOL,
+            call_data: call_data.into(),
+        })
+    }
+
+    pub fn is_pad_protocol(&self) -> bool {
+        self.protocol == X29CallUserData::PAD_PROTOCOL
+    }
+
+    pub fn call_data(&self) -> &[u8] {
+        &self.call_data
+    }
+
+    pub fn encode(&self, buf: &mut BytesMut) -> usize {
+        buf.put_slice(&self.protocol);
+        buf.put_slice(&self.call_data);
+
+        4 + self.call_data.len()
+    }
+
+    pub fn decode(mut buf: Bytes) -> Result<Self, String> {
+        if buf.len() < 4 {
+            return Err(format!("call user data too short: {}", buf.len()));
+        }
+
+        let mut protocol: [u8; 4] = [0; 4];
+
+        buf.copy_to_slice(&mut protocol);
+
+        Ok(X29CallUserData {
+            protocol,
+            call_data: buf.into(),
+        })
+    }
+}
+
 #[derive(PartialEq, Debug)]
 pub enum X29PadMessage {
     Set(Vec<(u8, u8)>),
@@ -111,7 +162,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decode_set() {
+    fn encode_call_user_data() {
+        let call_user_data = X29CallUserData::with_call_data(b"testing").unwrap();
+
+        let mut buf = BytesMut::new();
+
+        assert_eq!(call_user_data.encode(&mut buf), 11);
+
+        assert_eq!(&buf[..], b"\x01\x00\x00\x00testing");
+    }
+
+    #[test]
+    fn decode_call_user_data() {
+        let buf = Bytes::from_static(b"\x01\x00\x00\x00testing");
+
+        let call_user_data = X29CallUserData::decode(buf).unwrap();
+
+        assert!(call_user_data.is_pad_protocol());
+    }
+
+    #[test]
+    fn decode_set_message() {
         let buf = Bytes::from_static(b"\x02\x01\x00\x02\x7e");
 
         assert_eq!(
@@ -121,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_read() {
+    fn decode_read_message() {
         let buf = Bytes::from_static(b"\x04\x01\x00\x02\x00");
 
         assert_eq!(
@@ -131,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_set_read() {
+    fn decode_set_read_message() {
         let buf = Bytes::from_static(b"\x06\x01\x00\x02\x7e");
 
         assert_eq!(
@@ -141,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_indicate() {
+    fn encode_indicate_message() {
         let message = X29PadMessage::Indicate(vec![(1, 0), (2, 126)]);
 
         let mut buf = BytesMut::new();
@@ -152,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_clear_invitation() {
+    fn decode_clear_invitation_message() {
         let buf = Bytes::from_static(b"\x01");
 
         assert_eq!(
@@ -166,7 +237,11 @@ mod tests {
 pub mod fuzzing {
     use bytes::Bytes;
 
-    use super::X29PadMessage;
+    use super::*;
+
+    pub fn call_user_data_decode(buf: Bytes) -> Result<X29CallUserData, String> {
+        X29CallUserData::decode(buf)
+    }
 
     pub fn pad_message_decode(buf: Bytes) -> Result<X29PadMessage, String> {
         X29PadMessage::decode(buf)

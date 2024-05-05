@@ -4,6 +4,7 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use libxotpad::pad::{Pad, PadParams};
 use libxotpad::x25::packet::X25CallRequest;
 use libxotpad::x25::{Svc, Vc, X25Params};
+use libxotpad::x29::X29CallUserData;
 use libxotpad::x3::X3Params;
 use libxotpad::xot::{self, XotLink, XotResolver};
 use std::collections::HashMap;
@@ -19,38 +20,6 @@ use tracing_mutex::stdsync::{Mutex, RwLock};
 use crate::util::is_char_delete;
 use crate::x28::{X28Addr, X28Command, X28Selection, X28Signal};
 use crate::x3::UserPadParams;
-
-pub fn call(
-    selection: &X28Selection,
-    x25_params: &X25Params,
-    resolver: &XotResolver,
-) -> io::Result<Svc> {
-    assert!(!selection.addrs.is_empty());
-
-    if selection.addrs.len() > 1 {
-        todo!("multiple addresses");
-    }
-
-    let addr = &selection.addrs[0];
-
-    let X28Addr::Full(addr) = addr else {
-        todo!("abbreviated addresses");
-    };
-
-    if !selection.facilities.is_empty() {
-        todo!("facilities");
-    }
-
-    if !selection.call_user_data.is_empty() {
-        todo!("call user data");
-    }
-
-    let xot_link = xot::connect(addr, resolver)?;
-
-    let call_user_data = Bytes::from_static(b"\x01\x00\x00\x00");
-
-    Svc::call(xot_link, 1, addr, &call_user_data, x25_params)
-}
 
 #[derive(Copy, Clone, PartialEq)]
 enum PadLocalState {
@@ -70,7 +39,7 @@ pub fn run(
     resolver: &XotResolver,
     x3_profile: &str,
     tcp_listener: Option<TcpListener>,
-    svc: Option<Svc>,
+    initial_selection: &Option<X28Selection>,
 ) -> io::Result<()> {
     let (tx, rx) = channel();
 
@@ -116,12 +85,12 @@ pub fn run(
 
     let current_call = Arc::new(Mutex::new(Option::<(Pad<UserPadParams>, X25Params)>::None));
 
-    if let Some(svc) = svc {
-        let x25_params = svc.params();
+    if let Some(selection) = initial_selection {
+        let x3_params = Arc::clone(&x3_params);
 
-        let pad = Pad::new(svc, Arc::clone(&x3_params), true);
+        let call = call(selection, x3_params, x25_params, resolver)?;
 
-        current_call.lock().unwrap().replace((pad, x25_params));
+        current_call.lock().unwrap().replace(call);
 
         local_state = PadLocalState::Data;
         is_one_shot = true;
@@ -172,6 +141,13 @@ pub fn run(
                     }
 
                     let call_request = incoming_call.request().clone();
+
+                    if let Some((cause_code, diagnostic_code)) =
+                        should_accept_call(&call_request, &x25_params)
+                    {
+                        let _ = incoming_call.clear(cause_code, diagnostic_code);
+                        continue;
+                    }
 
                     let svc = incoming_call.accept().unwrap();
 
@@ -313,13 +289,11 @@ pub fn run(
                                 if current_call.is_some() {
                                     print_signal(X28Signal::Error, false); // Connected
                                 } else {
-                                    match call(selection, x25_params, resolver) {
-                                        Ok(svc) => {
-                                            let x25_params = svc.params();
+                                    let x3_params = Arc::clone(&x3_params);
 
-                                            let pad = Pad::new(svc, Arc::clone(&x3_params), true);
-
-                                            current_call.replace((pad, x25_params));
+                                    match call(selection, x3_params, x25_params, resolver) {
+                                        Ok(call) => {
+                                            current_call.replace(call);
 
                                             print_signal(X28Signal::Connected(None), false);
 
@@ -485,6 +459,58 @@ fn spawn_remote_thread(pad: &Pad<UserPadParams>, channel: Sender<PadInput>) -> J
             }
         })
         .expect("failed to spawn thread")
+}
+
+fn call(
+    selection: &X28Selection,
+    x3_params: Arc<RwLock<PadParams<UserPadParams>>>,
+    x25_params: &X25Params,
+    resolver: &XotResolver,
+) -> io::Result<(Pad<UserPadParams>, X25Params)> {
+    assert!(!selection.addrs.is_empty());
+
+    if selection.addrs.len() > 1 {
+        todo!("multiple addresses");
+    }
+
+    let addr = &selection.addrs[0];
+
+    let X28Addr::Full(addr) = addr else {
+        todo!("abbreviated addresses");
+    };
+
+    if !selection.facilities.is_empty() {
+        todo!("facilities");
+    }
+
+    let call_data = selection.call_user_data.as_bytes(); // TODO: as_ascii_bytes()
+
+    let xot_link = xot::connect(addr, resolver)?;
+
+    let pad = Pad::call(xot_link, 1, addr, call_data, x25_params, x3_params, true)?;
+
+    Ok((pad, x25_params.clone()))
+}
+
+fn should_accept_call(call_request: &X25CallRequest, params: &X25Params) -> Option<(u8, u8)> {
+    let local_addr = &params.addr;
+
+    if !local_addr.is_null() && !call_request.called_addr.starts_with(local_addr) {
+        eprint!("\r\nwarning: incoming call address does not match local address prefix\r\n");
+        return Some((13, 67)); // Not obtainable - invalid called DTE address
+    }
+
+    let Ok(call_user_data) = X29CallUserData::decode(call_request.call_user_data.clone()) else {
+        eprint!("\r\nwarning: incoming call X.29 call user data invalid\r\n");
+        return Some((13, 64)); // Not obtainable
+    };
+
+    if !call_user_data.is_pad_protocol() {
+        eprint!("\r\nwarning: incoming call X.29 protocol not supported\r\n");
+        return Some((13, 64)); // Not obtainable
+    }
+
+    None
 }
 
 fn read_params<Q: X3Params>(params: &PadParams<Q>, request: &[u8]) -> Vec<(u8, Option<u8>)> {

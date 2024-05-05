@@ -51,6 +51,10 @@ impl X121Addr {
             .chars()
             .map(|c| u8::try_from(c.to_digit(10).unwrap()).unwrap())
     }
+
+    pub fn starts_with(&self, prefix: &X121Addr) -> bool {
+        self.addr.starts_with(&prefix.addr)
+    }
 }
 
 impl fmt::Display for X121Addr {

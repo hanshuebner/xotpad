@@ -136,7 +136,7 @@ fn parse_addrs(s: &str) -> Result<(Vec<X28Addr>, &str), String> {
         rest = &rest[1..];
     }
 
-    Ok((addrs, &rest))
+    Ok((addrs, rest))
 }
 
 #[allow(clippy::type_complexity)] // TODO: X28Facility enum

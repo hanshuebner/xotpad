@@ -13,10 +13,11 @@ pub trait X3Params {
     fn all(&self) -> Vec<(u8, u8)>;
 }
 
-#[derive(Debug)]
+#[derive(PartialEq, Debug)]
 pub enum X3ParamError {
     Unsupported,
     InvalidValue,
+    Other,
 }
 
 #[derive(Copy, Clone, Debug)]

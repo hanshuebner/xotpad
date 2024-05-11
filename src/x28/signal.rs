@@ -1,4 +1,5 @@
 use libxotpad::x25::packet::X25CallRequest;
+use libxotpad::x3::X3ParamError;
 use std::fmt::{self, Write};
 
 /// X.28 _service_ signal.
@@ -7,7 +8,8 @@ pub enum X28Signal {
     Cleared(Option<(u8, u8)>),
     Free,
     Engaged,
-    LocalParams(Vec<(u8, Option<u8>)>),
+    LocalParams(Vec<(u8, Result<u8, X3ParamError>)>),
+    RemoteParams(Vec<(u8, Result<u8, X3ParamError>)>),
     Error,
 }
 
@@ -29,6 +31,11 @@ impl fmt::Display for X28Signal {
 
                 write!(fmt, "PAR {params}")
             }
+            X28Signal::RemoteParams(params) => {
+                let params = format_params(params);
+
+                write!(fmt, "RPAR {params}")
+            }
             X28Signal::Error => write!(fmt, "ERR"),
         }
     }
@@ -38,17 +45,17 @@ fn clear_cause(_code: u8) -> &'static str {
     "TODO"
 }
 
-fn format_params(params: &[(u8, Option<u8>)]) -> String {
+fn format_params(params: &[(u8, Result<u8, X3ParamError>)]) -> String {
     let mut s = String::new();
 
-    for &(param, value) in params {
+    for (param, value) in params {
         if !s.is_empty() {
             s.push_str(", ");
         }
 
         let _ = match value {
-            Some(value) => write!(&mut s, "{param}:{value}"),
-            None => write!(&mut s, "{param}:INV"),
+            Ok(value) => write!(&mut s, "{param}:{value}"),
+            Err(_) => write!(&mut s, "{param}:INV"),
         };
     }
 
@@ -75,8 +82,23 @@ mod tests {
 
     #[test]
     fn fmt_local_params() {
-        let signal = X28Signal::LocalParams(vec![(1, Some(1)), (2, None), (3, Some(3))]);
+        let signal = X28Signal::LocalParams(vec![
+            (1, Ok(1)),
+            (2, Err(X3ParamError::Unsupported)),
+            (3, Ok(3)),
+        ]);
 
         assert_eq!(signal.to_string(), "PAR 1:1, 2:INV, 3:3");
+    }
+
+    #[test]
+    fn fmt_remote_params() {
+        let signal = X28Signal::RemoteParams(vec![
+            (1, Ok(1)),
+            (2, Err(X3ParamError::Unsupported)),
+            (3, Ok(3)),
+        ]);
+
+        assert_eq!(signal.to_string(), "RPAR 1:1, 2:INV, 3:3");
     }
 }

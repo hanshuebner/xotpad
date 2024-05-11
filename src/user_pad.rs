@@ -5,7 +5,7 @@ use libxotpad::pad::{Pad, PadParams};
 use libxotpad::x25::packet::X25CallRequest;
 use libxotpad::x25::{Svc, Vc, X25Params};
 use libxotpad::x29::X29CallUserData;
-use libxotpad::x3::X3Params;
+use libxotpad::x3::{X3ParamError, X3Params};
 use libxotpad::xot::{self, XotLink, XotResolver};
 use std::collections::HashMap;
 use std::io::{self, BufReader, Read, Write};
@@ -323,14 +323,19 @@ pub fn run(
                             Ok(X28Command::Read(ref request)) => {
                                 let response = read_params(&x3_params.read().unwrap(), request);
 
-                                print_signal(X28Signal::LocalParams(response), false);
+                                print_signal(
+                                    X28Signal::LocalParams(normalize_read_params_response(
+                                        &response,
+                                    )),
+                                    false,
+                                );
                             }
                             Ok(X28Command::Set(ref request)) => {
                                 let response = set_params(&mut x3_params.write().unwrap(), request);
 
                                 // Only invalid requests are output by the set command.
-                                let invalid: Vec<(u8, Option<u8>)> =
-                                    response.into_iter().filter(|(_, r)| r.is_none()).collect();
+                                let invalid: Vec<(u8, Result<u8, X3ParamError>)> =
+                                    response.into_iter().filter(|(_, r)| r.is_ok()).collect();
 
                                 if !invalid.is_empty() {
                                     print_signal(X28Signal::LocalParams(invalid), false);
@@ -340,6 +345,43 @@ pub fn run(
                                 let response = set_params(&mut x3_params.write().unwrap(), request);
 
                                 print_signal(X28Signal::LocalParams(response), false);
+                            }
+                            Ok(X28Command::RemoteRead(ref request)) => {
+                                if let Some((pad, _)) = current_call.as_ref() {
+                                    match pad.get_remote_params(request) {
+                                        Ok(response) => {
+                                            print_signal(
+                                                X28Signal::RemoteParams(
+                                                    normalize_read_params_response(&response),
+                                                ),
+                                                false,
+                                            );
+                                        }
+                                        Err(err) if err.kind() == io::ErrorKind::TimedOut => {
+                                            eprintln!("warning: X.29 read command timed out\r\n");
+                                        }
+                                        Err(err) => return Err(err),
+                                    };
+                                } else {
+                                    print_signal(X28Signal::Error, false); // Not connected
+                                }
+                            }
+                            Ok(X28Command::RemoteSetRead(ref request)) => {
+                                if let Some((pad, _)) = current_call.as_ref() {
+                                    match pad.set_remote_params(request) {
+                                        Ok(response) => {
+                                            print_signal(X28Signal::RemoteParams(response), false);
+                                        }
+                                        Err(err) if err.kind() == io::ErrorKind::TimedOut => {
+                                            eprintln!(
+                                                "warning: X.29 set and read command timed out\r\n"
+                                            );
+                                        }
+                                        Err(err) => return Err(err),
+                                    };
+                                } else {
+                                    print_signal(X28Signal::Error, false); // Not connected
+                                }
                             }
                             Ok(X28Command::Status) => {
                                 let signal = if current_call.is_some() {
@@ -524,16 +566,26 @@ fn read_params<Q: X3Params>(params: &PadParams<Q>, request: &[u8]) -> Vec<(u8, O
 fn set_params<Q: X3Params>(
     params: &mut PadParams<Q>,
     request: &[(u8, u8)],
-) -> Vec<(u8, Option<u8>)> {
+) -> Vec<(u8, Result<u8, X3ParamError>)> {
     request
         .iter()
         .map(|&(p, v)| {
-            if params.set(p, v).is_err() {
-                return (p, None);
+            if let Err(err) = params.set(p, v) {
+                return (p, Err(err));
             }
 
-            (p, params.get(p))
+            // If we were able to set the parameter, it SHOULD be supported.
+            (p, params.get(p).ok_or(X3ParamError::Unsupported))
         })
+        .collect()
+}
+
+fn normalize_read_params_response(
+    response: &[(u8, Option<u8>)],
+) -> Vec<(u8, Result<u8, X3ParamError>)> {
+    response
+        .iter()
+        .map(|&(p, r)| (p, r.ok_or(X3ParamError::Unsupported)))
         .collect()
 }
 

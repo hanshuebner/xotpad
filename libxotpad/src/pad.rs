@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::ops::Add;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -17,18 +17,16 @@ use crate::x3::{X3Echo, X3Editing, X3Forward, X3Idle, X3LfInsert, X3ParamError, 
 use crate::xot::XotLink;
 
 type SendQueue = (VecDeque<u8>, Option<Instant>);
-type IndicateChannelMessage = Vec<(u8, u8)>;
+type IndicateMessage = Vec<(u8, Result<u8, X3ParamError>)>;
 
 pub struct Pad<Q: X3Params + Send + Sync + 'static> {
     svc: Svc,
     params: Arc<RwLock<PadParams<Q>>>,
     should_suppress_echo_when_editing: bool,
-
     send_queue: Arc<(Mutex<SendQueue>, Condvar)>,
     recv_queue: Arc<(Mutex<VecDeque<u8>>, Condvar)>,
     recv_end: Arc<AtomicBool>,
-
-    indicate_channel: Arc<Mutex<Option<Sender<IndicateChannelMessage>>>>,
+    indicate_channel: Arc<Mutex<Option<Sender<IndicateMessage>>>>,
 }
 
 impl<Q: X3Params + Send + Sync + 'static> Pad<Q> {
@@ -40,7 +38,7 @@ impl<Q: X3Params + Send + Sync + 'static> Pad<Q> {
         let send_queue = Arc::new((Mutex::new((VecDeque::new(), None)), Condvar::new()));
         let recv_queue = Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
         let recv_end = Arc::new(AtomicBool::new(false));
-        let indicate_channel = Arc::new(Mutex::new(None));
+        let indicate_channel = Arc::new(Mutex::new(None::<Sender<IndicateMessage>>));
 
         thread::Builder::new()
             .name("pad".to_string())
@@ -50,6 +48,7 @@ impl<Q: X3Params + Send + Sync + 'static> Pad<Q> {
                 let send_queue = Arc::clone(&send_queue);
                 let recv_queue = Arc::clone(&recv_queue);
                 let recv_end = Arc::clone(&recv_end);
+                let indicate_channel = Arc::clone(&indicate_channel);
 
                 move || {
                     let mut should_clear = false;
@@ -94,7 +93,15 @@ impl<Q: X3Params + Send + Sync + 'static> Pad<Q> {
                                             todo!();
                                         }
                                     }
-                                    Ok(X29PadMessage::Indicate(_response)) => todo!(),
+                                    Ok(X29PadMessage::Indicate(response)) => {
+                                        let channel = &mut *indicate_channel.lock().unwrap();
+
+                                        if let Some(channel) = channel.take() {
+                                            if let Err(_err) = channel.send(response) {
+                                                todo!();
+                                            }
+                                        }
+                                    }
                                     Ok(X29PadMessage::ClearInvitation) => {
                                         if let Err(_err) = send_queued_data(
                                             &svc,
@@ -110,7 +117,10 @@ impl<Q: X3Params + Send + Sync + 'static> Pad<Q> {
                                         should_clear = true;
                                         break;
                                     }
-                                    Err(_) => todo!(),
+                                    Err(e) => {
+                                        dbg!(e);
+                                        todo!()
+                                    }
                                 }
                             }
                             Ok(Some((data, false))) => {
@@ -212,24 +222,37 @@ impl<Q: X3Params + Send + Sync + 'static> Pad<Q> {
         Ok(Pad::new(svc, pad_params, should_suppress_echo_when_editing))
     }
 
-    pub fn get_remote_params(&self, _request: &[u8]) -> Vec<(u8, u8)> {
-        todo!()
-    }
-
-    pub fn set_remote_params(&self, _request: &[(u8, u8)]) -> Vec<(u8, u8)> {
-        todo!()
-    }
-
-    pub fn invite_clear(&self) -> io::Result<()> {
-        send_message(&self.svc, X29PadMessage::ClearInvitation)
+    pub fn into_svc(self) -> Svc {
+        self.svc
     }
 
     pub fn clear(self, cause_code: u8, diagnostic_code: u8) -> io::Result<()> {
         self.svc.clear(cause_code, diagnostic_code)
     }
 
-    pub fn into_svc(self) -> Svc {
-        self.svc
+    pub fn invite_clear(&self) -> io::Result<()> {
+        send_message(&self.svc, X29PadMessage::ClearInvitation)
+    }
+
+    pub fn get_remote_params(&self, request: &[u8]) -> io::Result<Vec<(u8, Option<u8>)>> {
+        let response = send_message_recv_indicate(
+            &self.svc,
+            X29PadMessage::Read(request.into()),
+            &self.indicate_channel,
+        )?;
+
+        Ok(response.into_iter().map(|(p, r)| (p, r.ok())).collect())
+    }
+
+    pub fn set_remote_params(
+        &self,
+        request: &[(u8, u8)],
+    ) -> io::Result<Vec<(u8, Result<u8, X3ParamError>)>> {
+        send_message_recv_indicate(
+            &self.svc,
+            X29PadMessage::SetRead(request.into()),
+            &self.indicate_channel,
+        )
     }
 
     fn should_echo_write(&self, params: &PadParams<Q>) -> bool {
@@ -265,6 +288,10 @@ impl<Q: X3Params + Send + Sync + 'static> Clone for Pad<Q> {
 
 impl<Q: X3Params + Send + Sync + 'static> Read for Pad<Q> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
         let mut queue = self.recv_queue.0.lock().unwrap();
 
         loop {
@@ -284,8 +311,9 @@ impl<Q: X3Params + Send + Sync + 'static> Read for Pad<Q> {
                 return Ok(index);
             }
 
-            // TODO: Is this correct, we've locked the queue so I think it's
-            // okay to check here for just the end.
+            assert!(queue.is_empty());
+
+            // We won't miss any data as the queue is locked.
             if self.recv_end.load(Ordering::Relaxed) {
                 return Ok(0);
             }
@@ -393,22 +421,48 @@ fn send_queued_data(svc: &Svc, queue: &mut SendQueue) -> io::Result<()> {
 }
 
 fn send_message(svc: &Svc, message: X29PadMessage) -> io::Result<()> {
-    svc.flush()?;
-
     let mut buf = BytesMut::new();
 
     message.encode(&mut buf);
 
-    svc.send(buf.into(), true)
+    svc.send(buf.into(), true)?;
+
+    svc.flush()
+}
+
+fn send_message_recv_indicate(
+    svc: &Svc,
+    message: X29PadMessage,
+    indicate_channel: &Mutex<Option<Sender<IndicateMessage>>>,
+) -> io::Result<IndicateMessage> {
+    let (sender, receiver) = channel();
+
+    {
+        let mut channel = indicate_channel.lock().unwrap();
+
+        if channel.is_some() {
+            todo!("pending remote command");
+        }
+
+        channel.replace(sender);
+    }
+
+    send_message(svc, message)?;
+
+    match receiver.recv_timeout(Duration::from_secs(5)) {
+        Ok(response) => Ok(response),
+        Err(RecvTimeoutError::Timeout) => Err(io::Error::from(io::ErrorKind::TimedOut)),
+        Err(_) => panic!("unexpected channel error"),
+    }
 }
 
 fn read_params<Q: X3Params>(params: &Q, request: &[u8]) -> X29PadMessage {
     let response = if request.is_empty() {
-        params.all().to_vec()
+        params.all().iter().map(|&(p, v)| (p, Ok(v))).collect()
     } else {
         request
             .iter()
-            .map(|&p| (p, params.get(p).unwrap_or(0x81)))
+            .map(|&p| (p, params.get(p).ok_or(X3ParamError::Unsupported)))
             .collect()
     };
 
@@ -421,13 +475,12 @@ fn set_params<Q: X3Params>(params: &mut Q, request: &[(u8, u8)]) -> Option<X29Pa
         todo!();
     }
 
-    let response: Vec<(u8, u8)> = request
+    let response: Vec<(u8, Result<u8, X3ParamError>)> = request
         .iter()
         .map(|&(p, v)| (p, params.set(p, v)))
         .filter_map(|(p, r)| {
-            // TODO: improve this, so we can return a correct error code!
-            if r.is_err() {
-                Some((p, 0x80))
+            if let Err(err) = r {
+                Some((p, Err(err)))
             } else {
                 None
             }
@@ -447,15 +500,15 @@ fn set_read_params<Q: X3Params>(params: &mut Q, request: &[(u8, u8)]) -> X29PadM
         todo!();
     }
 
-    let response: Vec<(u8, u8)> = request
+    let response: Vec<(u8, Result<u8, X3ParamError>)> = request
         .iter()
         .map(|&(p, v)| {
-            // TODO: improve this, so we can return a correct error code!
-            if params.set(p, v).is_err() {
-                return (p, 0x80);
+            if let Err(err) = params.set(p, v) {
+                return (p, Err(err));
             }
 
-            (p, params.get(p).unwrap_or(0x81))
+            // If we were able to set the parameter, it SHOULD be supported.
+            (p, params.get(p).ok_or(X3ParamError::Unsupported))
         })
         .collect();
 

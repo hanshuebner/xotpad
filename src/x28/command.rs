@@ -10,6 +10,8 @@ pub enum X28Command {
     Read(Vec<u8>),
     Set(Vec<(u8, u8)>),
     SetRead(Vec<(u8, u8)>),
+    RemoteRead(Vec<u8>),
+    RemoteSetRead(Vec<(u8, u8)>),
     Status,
     InviteClear,
     Help(String),
@@ -58,6 +60,20 @@ impl FromStr for X28Command {
                 }
 
                 Ok(X28Command::SetRead(params))
+            }
+            "RPAR?" | "RREAD" => {
+                let params = parse_read_params(rest)?;
+
+                Ok(X28Command::RemoteRead(params))
+            }
+            "RSET?" | "RSETREAD" => {
+                let params = parse_set_params(rest)?;
+
+                if params.is_empty() {
+                    return Err("parameters argument required".into());
+                }
+
+                Ok(X28Command::RemoteSetRead(params))
             }
             "STAT" | "STATUS" => Ok(X28Command::Status),
             "ICLR" | "ICLEAR" => Ok(X28Command::InviteClear),
@@ -225,6 +241,58 @@ mod tests {
         assert!(X28Command::from_str("set? 1:a").is_err());
         assert!(X28Command::from_str("set? a").is_err());
         assert!(X28Command::from_str("set? ,").is_err());
+    }
+
+    #[test]
+    fn from_str_remote_read() {
+        assert_eq!(
+            X28Command::from_str("rpar?"),
+            Ok(X28Command::RemoteRead(vec![]))
+        );
+        assert_eq!(
+            X28Command::from_str("rpar? 1"),
+            Ok(X28Command::RemoteRead(vec![1]))
+        );
+        assert_eq!(
+            X28Command::from_str("rpar? 1,2"),
+            Ok(X28Command::RemoteRead(vec![1, 2]))
+        );
+        assert_eq!(
+            X28Command::from_str("rpar? 1, 2"),
+            Ok(X28Command::RemoteRead(vec![1, 2]))
+        );
+    }
+
+    #[test]
+    fn from_str_remote_read_invalid() {
+        assert!(X28Command::from_str("rpar? a").is_err());
+        assert!(X28Command::from_str("rpar? 1,a").is_err());
+        assert!(X28Command::from_str("rpar? ,").is_err());
+    }
+
+    #[test]
+    fn from_str_remote_set_read() {
+        assert_eq!(
+            X28Command::from_str("rset? 1:1"),
+            Ok(X28Command::RemoteSetRead(vec![(1, 1)]))
+        );
+        assert_eq!(
+            X28Command::from_str("rset? 1:1,2:2"),
+            Ok(X28Command::RemoteSetRead(vec![(1, 1), (2, 2)]))
+        );
+        assert_eq!(
+            X28Command::from_str("rset? 1: 1, 2 : 2"),
+            Ok(X28Command::RemoteSetRead(vec![(1, 1), (2, 2)]))
+        );
+    }
+
+    #[test]
+    fn from_str_remote_set_read_invalid() {
+        assert!(X28Command::from_str("rset?").is_err());
+        assert!(X28Command::from_str("rset? 1").is_err());
+        assert!(X28Command::from_str("rset? 1:a").is_err());
+        assert!(X28Command::from_str("rset? a").is_err());
+        assert!(X28Command::from_str("rset? ,").is_err());
     }
 
     #[test]

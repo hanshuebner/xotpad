@@ -371,7 +371,8 @@ impl Vc for Svc {
         let inner = &self.0;
 
         if !self.is_connected() {
-            todo!("invalid state");
+            // TODO: is this the correct error?
+            return Err(io::Error::from(io::ErrorKind::BrokenPipe));
         }
 
         let packet_size = inner.params.read().unwrap().send_packet_size;
@@ -495,7 +496,8 @@ impl Vc for Svc {
             if !state.is_connected() {
                 match *state {
                     VcState::Cleared(ClearInitiator::Local | ClearInitiator::Remote(_), _) => {
-                        todo!("what error is this?");
+                        // TODO: is this the correct error?
+                        return Err(io::Error::from(io::ErrorKind::BrokenPipe));
                     }
                     VcState::Cleared(ClearInitiator::TimeOut(_), _) => {
                         return Err(io::Error::from(io::ErrorKind::TimedOut));

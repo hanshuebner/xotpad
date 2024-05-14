@@ -226,6 +226,10 @@ impl<Q: X3Params + Send + Sync + 'static> Pad<Q> {
         self.svc
     }
 
+    pub fn is_connected(&self) -> bool {
+        self.svc.is_connected()
+    }
+
     pub fn clear(self, cause_code: u8, diagnostic_code: u8) -> io::Result<()> {
         self.svc.clear(cause_code, diagnostic_code)
     }
@@ -329,7 +333,8 @@ impl<Q: X3Params + Send + Sync + 'static> Write for Pad<Q> {
             return Ok(0);
         }
 
-        // TODO: if svc is closed then return Ok(0) or error?
+        // TODO: should we check is_connected() here? We CAN skip it here and wait for
+        // send_queud_data to catch it but it might make more sense to check here too.
 
         let packet_size = self.svc.params().send_packet_size;
 
@@ -394,6 +399,9 @@ impl<Q: X3Params + Send + Sync + 'static> Write for Pad<Q> {
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        // TODO: should we check is_connected() here? We CAN skip it here and wait for
+        // send_queud_data or flush to catch it but it might make more sense to check here too.
+
         let mut queue = self.send_queue.0.lock().unwrap();
 
         send_queued_data(&self.svc, &mut queue)?;

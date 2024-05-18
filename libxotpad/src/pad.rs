@@ -134,16 +134,11 @@ impl<Q: X3Params + Send + Sync + 'static> Pad<Q> {
                                 recv_queue.1.notify_all();
                             }
                             Ok(None) => {
-                                // TODO: wake up the indicate waiter... actually maybe
-                                // we just do that at the end of the loop
                                 break;
                             }
-                            Err(_err) => {
-                                todo!("ERR");
-
-                                // TODO: wake up the indicate waiter... actually maybe
-                                // we just do that at the end of the loop
-                                //break;
+                            Err(err) => {
+                                dbg!(err); // TODO: do we need to store this somewhere
+                                break;
                             }
                         }
                     }
@@ -156,6 +151,8 @@ impl<Q: X3Params + Send + Sync + 'static> Pad<Q> {
 
                     recv_end.store(true, Ordering::Relaxed);
                     recv_queue.1.notify_all();
+
+                    // TODO: wake up the indicate waiter... if there is one!
                 }
             })
             .expect("failed to spawn thread");
